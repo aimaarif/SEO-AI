@@ -3,7 +3,7 @@ services:
   - type: web
     name: fullstack-app
     env: node
-    buildCommand: npm install && npm run build
+    buildCommand: npm install && npm run build && npx drizzle-kit push
     startCommand: npm start
     envVars:
       - key: NODE_ENV
