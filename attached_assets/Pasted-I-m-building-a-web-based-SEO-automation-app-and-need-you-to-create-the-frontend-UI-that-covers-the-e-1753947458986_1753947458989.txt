@@ -1,0 +1,125 @@
+I’m building a web-based SEO automation app and need you to create the frontend UI that covers the entire workflow, with an attractive, clean design.
+
+🧩 App Concept:
+The app automates keyword research, content creation, editorial approval, social media sharing, and WordPress publishing — using AI agents (e.g., via LangChain/OpenAI/Claude).
+
+🧠 Core User Flows:
+Scheduled Keyword Research — runs at 9am daily
+
+Keyword Storage — results saved to Google Sheets (shown in UI table)
+
+Content Brief Generator — evaluates best topic and creates a content brief
+
+AI Content Writer — writes full article draft based on brief
+
+Editor Approval Panel — Gmail-like approval with inline comments
+
+If Approved:
+
+Marked as "Approved" in Google Sheet
+
+Sent to WordPress blog in Draft
+
+Social media post is auto-generated
+
+Image and infographic are generated
+
+If Not Approved:
+
+Editor writes feedback
+
+Sent back to AI writer or alternate writer
+
+Process loops again
+
+🖥️ Pages to Create (with routing)
+Use Next.js or React with page-based routing. Pages needed:
+
+/dashboard – Overview of workflow, upcoming tasks, performance
+
+/keyword-research – Trigger keyword agent, display table of results
+
+/content-brief – Show suggested topics, edit content brief
+
+/writer – AI-generated draft preview, editor to tweak or resubmit
+
+/approval – Gmail-style comment + approve interface
+
+/distribution – Show auto-generated social media post, image, infographic
+
+/history – Logs of prompts, feedback, final posts
+
+/settings – API key config, task scheduling, model selector
+
+🎨 UI Design Guidelines:
+Theme: Modern and minimal
+
+Colors:
+
+Background: Black
+
+Text: White
+
+Accent & CTA Buttons: #bff747
+
+Typography: Use sans-serif, bold headings, clean readability
+
+Components should include:
+
+Cards (for content or task summaries)
+
+Tables (keyword results, status)
+
+Modal popups (for content preview or approval)
+
+Toasts/snackbars (for success/failure alerts)
+
+Toggle switches, sliders (in settings)
+
+Tabs or steps (for multi-stage workflows)
+
+🧩 Components to Create:
+<KeywordTable /> – Renders keyword list with "Save to Google Sheet" button
+
+<PromptEditor /> – Live-edit prompt for AI content brief
+
+<ContentPreview /> – Article viewer with accept/reject buttons
+
+<ApprovalPanel /> – Comment box + status switch (approve/request changes)
+
+<SocialPreview /> – Social media post preview
+
+<ImageGallery /> – Generated image + infographic viewer
+
+<WorkflowCard /> – Shows status, task history in dashboard
+
+<SettingsPanel /> – API keys, task scheduling UI
+
+🧠 Notes:
+Include dummy/mock data for now (we'll hook up backend/LLM later)
+
+All buttons/flows should be clickable (even if static at first)
+
+Add dark mode layout with light text and clear section dividers
+
+Responsiveness is key — it should look great on desktop and mobile
+
+✅ Stack:
+Framework: React or Next.js
+
+Styling: Tailwind CSS with custom theme using #bff747
+
+Optional UI Lib: ShadCN or Headless UI if needed for modals/forms
+
+📦 Output:
+Generate a full frontend app scaffold that:
+
+Has all routes and screens set up
+
+Uses clean component structure
+
+Includes attractive landing dashboard with bold modern layout
+
+Allows easy integration with LangChain or LLM APIs later
+
+Bonus: Add a small animation or micro-interaction on button click (e.g., on "Generate Brief" or "Send to Writer").

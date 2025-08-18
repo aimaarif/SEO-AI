@@ -1,0 +1,22 @@
+services:
+  # Web service for the Express backend and React frontend
+  - type: web
+    name: fullstack-app
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: app-db
+          property: connectionString
+
+  # PostgreSQL database
+databases:
+  - name: app-db
+    plan: free
+    ipAllowList: [] # Allow all IPs to access the database
