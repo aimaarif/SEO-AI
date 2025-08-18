@@ -6,35 +6,8 @@ dotenv.config();
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
-
-import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-
-const app = express();
-const PORT = process.env.PORT || 5000;
-
-// Example API
-app.get("/api/hello", (_, res) => {
-  res.json({ message: "Hello from API" });
-});
-
-// Serve React build
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Important: Vite build outputs to `dist/` by default, but that's for frontend
-// To keep things clean, output React to `client/dist`
-app.use(express.static(path.join(__dirname, "../client/dist")));
-
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "../client/dist/index.html"));
-});
-
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-});
-
 
 const app = express();
 app.use(express.json());
@@ -70,6 +43,15 @@ app.use((req, res, next) => {
   next();
 });
 
+// Example API
+app.get("/api/hello", (_, res) => {
+  res.json({ message: "Hello from API" });
+});
+
+// Serve React build
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 (async () => {
   const server = await registerRoutes(app);
 
@@ -87,7 +69,13 @@ app.use((req, res, next) => {
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
+    // Important: Vite build outputs to `dist/public` by default
     serveStatic(app);
+    
+    // Catch-all route for SPA
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(__dirname, "../dist/public/index.html"));
+    });
   }
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
