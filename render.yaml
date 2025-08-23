@@ -3,7 +3,7 @@ services:
   - type: web
     name: fullstack-app
     env: node
-    buildCommand: npm ci --include=dev && npm run build
+    buildCommand: npm ci --include=dev && npm run build && npm run db:push
     startCommand: npm start
     envVars:
       - key: NODE_ENV
@@ -26,7 +26,7 @@ services:
   - type: worker
     name: automation-worker
     env: node
-    buildCommand: npm ci --include=dev && npm run build
+    buildCommand: npm ci --include=dev && npm run build && npm run db:push
     startCommand: npm run worker:start
     envVars:
       - key: NODE_ENV
@@ -47,7 +47,7 @@ services:
   - type: worker
     name: queue-monitor
     env: node
-    buildCommand: npm ci --include=dev && npm run build
+    buildCommand: npm ci --include=dev && npm run build && npm run db:push
     startCommand: npm run queue:monitor
     envVars:
       - key: NODE_ENV
@@ -68,7 +68,7 @@ services:
   - type: worker
     name: scheduler
     env: node
-    buildCommand: npm ci --include=dev && npm run build
+    buildCommand: npm ci --include=dev && npm run build && npm run db:push
     startCommand: npm run scheduler:start
     envVars:
       - key: NODE_ENV
