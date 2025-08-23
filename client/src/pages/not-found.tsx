@@ -15,29 +15,7 @@ export default function NotFound() {
             Did you forget to add the page to the router?
           </p>
 
-          <p className="mt-2 text-xs text-gray-500">
-            If you returned from WordPress, please wait while we complete sign-in…
-          </p>
 
-          {/* Minimal fallback: if SPA catches /oauth/callback/:clientId, call backend then redirect */}
-          <script
-            dangerouslySetInnerHTML={{
-              __html: `
-                (function() {
-                  try {
-                    var m = location.pathname.match(/^\\/oauth\\/callback\\/([^/]+)$/);
-                    if (m && m[1]) {
-                      var qs = location.search || '';
-                      var url = '/oauth/callback/' + encodeURIComponent(m[1]) + qs;
-                      fetch(url, { credentials: 'include' })
-                        .then(function() { window.location.replace('/approval' + (qs || '')); })
-                        .catch(function() { window.location.replace('/approval' + (qs || '')); });
-                    }
-                  } catch (e) {}
-                })();
-              `,
-            }}
-          />
         </CardContent>
       </Card>
     </div>

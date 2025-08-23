@@ -24,6 +24,7 @@ export const clients = pgTable("clients", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id),
   brandName: text("brand_name").notNull(),
+  email: text("email"),
   tagline: text("tagline"),
   mission: text("mission"),
   vision: text("vision"),
@@ -55,20 +56,24 @@ export const clients = pgTable("clients", {
   emailTemplates: jsonb("email_templates"),
   brandGuidelines: text("brand_guidelines"),
   // WordPress connection fields
-  connectionType: text("connection_type").default("oauth"), // "oauth" or "application_password"
   wpSiteUrl: text("wp_site_url"),
-  // OAuth fields
-  wpClientId: text("wp_client_id"),
-  wpClientSecret: text("wp_client_secret"),
-  wpRedirectUri: text("wp_redirect_uri"),
-  wpAccessToken: text("wp_access_token"),
-  wpRefreshToken: text("wp_refresh_token"),
-  tokenExpiry: timestamp("token_expiry"),
   // Application Password fields
   wpUsername: text("wp_username"),
   wpAppPassword: text("wp_app_password"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// New table: per-row JSON from uploaded Excel files for a client
+export const clientExcels = pgTable("client_excels", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  clientId: varchar("client_id").notNull().references(() => clients.id),
+  batchId: text("batch_id").notNull(),
+  originalFileName: text("original_file_name"),
+  rowIndex: integer("row_index").notNull(),
+  data: jsonb("data").notNull(),
+  automation: text("automation").notNull().default("pending"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const keywords = pgTable("keywords", {
@@ -276,6 +281,42 @@ export const insertReportSchema = createInsertSchema(reports).omit({
   createdAt: true,
 });
 
+export const insertClientExcelSchema = createInsertSchema(clientExcels).omit({
+  id: true,
+  createdAt: true,
+});
+
+// Automation schedules table
+export const automationSchedules = pgTable("automation_schedules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  clientId: varchar("client_id").notNull().references(() => clients.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  frequency: text("frequency").notNull(), // daily, weekly, monthly
+  interval: integer("interval").notNull().default(1), // every X days/weeks/months
+  jobsPerRun: integer("jobs_per_run").notNull().default(1), // how many jobs to process per run
+  startTime: text("start_time").notNull().default("09:00"), // HH:MM format
+  daysOfWeek: jsonb("days_of_week"), // [1,2,3,4,5,6,7] for weekly, null for daily/monthly
+  dayOfMonth: integer("day_of_month"), // 1-31 for monthly, null for daily/weekly
+  isActive: text("is_active").notNull().default("active"), // active, paused, deleted
+  lastRunAt: timestamp("last_run_at"),
+  nextRunAt: timestamp("next_run_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const automationSchedulesRelations = relations(automationSchedules, ({ one }) => ({
+  client: one(clients, { fields: [automationSchedules.clientId], references: [clients.id] }),
+}));
+
+export const insertAutomationScheduleSchema = createInsertSchema(automationSchedules).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastRunAt: true,
+  nextRunAt: true,
+});
+
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
@@ -304,5 +345,8 @@ export type Comment = typeof comments.$inferSelect;
 export type InsertReport = z.infer<typeof insertReportSchema>;
 export type Report = typeof reports.$inferSelect;
 
-export type InsertActivity = z.infer<typeof insertActivitySchema>;
-export type Activity = typeof activities.$inferSelect;
+export type InsertClientExcel = z.infer<typeof insertClientExcelSchema>;
+export type ClientExcel = typeof clientExcels.$inferSelect;
+
+export type InsertAutomationSchedule = z.infer<typeof insertAutomationScheduleSchema>;
+export type AutomationSchedule = typeof automationSchedules.$inferSelect;

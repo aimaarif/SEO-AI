@@ -25,8 +25,10 @@ import {
   articles,
   distributions,
   comments,
-  activities
-} from "@shared/schema";
+  activities,
+  clientExcels,
+  automationSchedules
+} from "../shared/schema.js";
 import { db } from "./db";
 import { eq, and, desc } from "drizzle-orm";
 
@@ -87,6 +89,9 @@ export interface IStorage {
   // Activity methods
   getActivities(options?: { projectId?: string; limit?: number }): Promise<Activity[]>;
   createActivity(activity: InsertActivity): Promise<Activity>;
+
+  // Client Excel methods
+  getClientExcelRows(clientId: string, status?: string): Promise<any[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -330,6 +335,87 @@ export class DatabaseStorage implements IStorage {
   async createActivity(insertActivity: InsertActivity): Promise<Activity> {
     const [activity] = await db.insert(activities).values(insertActivity).returning();
     return activity;
+  }
+
+  // Client Excel methods
+  async getClientExcelRows(clientId: string, status?: string): Promise<any[]> {
+    const query = db.select().from(clientExcels).where(eq(clientExcels.clientId, clientId));
+    
+    if (status) {
+      return await query.where(eq(clientExcels.automation, status)).orderBy(clientExcels.createdAt);
+    }
+    
+    return await query.orderBy(clientExcels.createdAt);
+  }
+
+  async hasPendingJobs(clientId: string): Promise<boolean> {
+    const [result] = await db.select({ count: sql`count(*)` })
+      .from(clientExcels)
+      .where(and(
+        eq(clientExcels.clientId, clientId),
+        eq(clientExcels.automation, 'pending')
+      ));
+    
+    return (result?.count as number) > 0;
+  }
+
+  // Automation Schedule methods
+  async getAutomationSchedules(clientId?: string): Promise<any[]> {
+    const query = db.select().from(automationSchedules);
+    
+    if (clientId) {
+      return await query.where(eq(automationSchedules.clientId, clientId)).orderBy(automationSchedules.createdAt);
+    }
+    
+    return await query.orderBy(automationSchedules.createdAt);
+  }
+
+  async getActiveSchedules(): Promise<any[]> {
+    return await db.select()
+      .from(automationSchedules)
+      .where(eq(automationSchedules.isActive, 'active'))
+      .orderBy(automationSchedules.nextRunAt);
+  }
+
+  async getAutomationSchedule(id: string): Promise<any | undefined> {
+    const [schedule] = await db.select().from(automationSchedules).where(eq(automationSchedules.id, id));
+    return schedule || undefined;
+  }
+
+  async createAutomationSchedule(insertSchedule: any): Promise<any> {
+    const [schedule] = await db.insert(automationSchedules).values(insertSchedule).returning();
+    return schedule;
+  }
+
+  async updateAutomationSchedule(id: string, updateData: any): Promise<any> {
+    const [schedule] = await db.update(automationSchedules)
+      .set({ ...updateData, updatedAt: new Date() })
+      .where(eq(automationSchedules.id, id))
+      .returning();
+    return schedule;
+  }
+
+  async deleteAutomationSchedule(id: string): Promise<void> {
+    await db.delete(automationSchedules).where(eq(automationSchedules.id, id));
+  }
+
+  async getActiveSchedules(): Promise<any[]> {
+    return await db.select()
+      .from(automationSchedules)
+      .where(eq(automationSchedules.isActive, 'active'))
+      .orderBy(automationSchedules.nextRunAt);
+  }
+
+  async updateScheduleNextRun(id: string, nextRunAt: Date): Promise<void> {
+    await db.update(automationSchedules)
+      .set({ nextRunAt, updatedAt: new Date() })
+      .where(eq(automationSchedules.id, id));
+  }
+
+  async updateScheduleLastRun(id: string, lastRunAt: Date): Promise<void> {
+    await db.update(automationSchedules)
+      .set({ lastRunAt, updatedAt: new Date() })
+      .where(eq(automationSchedules.id, id));
   }
 }
 

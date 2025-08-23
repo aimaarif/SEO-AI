@@ -95,7 +95,7 @@ export async function generateArticle(data: GenerateArticleRequest): Promise<Gen
   }
 }
 
-export async function sendArticleEmail(data: { email: string; title: string; content: string; articleId?: string }): Promise<{ success: boolean; articleId: string }> {
+export async function sendArticleEmail(data: { email: string; title: string; content: string; articleId?: string; clientId?: string }): Promise<{ success: boolean; articleId: string }> {
   try {
     const response = await fetch('/api/send-article-email', {
       method: 'POST',
@@ -234,6 +234,7 @@ export async function deleteComment(id: string): Promise<void> {
 export interface Client {
   id?: string;
   brandName: string;
+  email: string; // Add this line
   tagline: string;
   mission: string;
   vision: string;
@@ -274,12 +275,7 @@ export interface Client {
   emailTemplates: string[];
   brandGuidelines: string;
   // WordPress connection fields
-  connectionType?: 'oauth' | 'application_password';
   wpSiteUrl?: string;
-  // OAuth fields
-  wpClientId?: string;
-  wpClientSecret?: string;
-  wpRedirectUri?: string;
   // Application Password fields
   wpUsername?: string;
   wpAppPassword?: string;
@@ -341,10 +337,7 @@ export async function publishToClientWordpress(clientId: string, articleId: stri
   return await res.json();
 }
 
-export function startClientWordpressOAuth(clientId: string, articleId?: string) {
-  const qs = articleId ? `?articleId=${encodeURIComponent(articleId)}` : '';
-  window.location.href = `/auth/wordpress/${encodeURIComponent(clientId)}${qs}`;
-}
+
 
 export async function verifyWordPressConnection(clientId: string): Promise<{ success: boolean; error?: string }> {
   try {
@@ -358,4 +351,189 @@ export async function verifyWordPressConnection(clientId: string): Promise<{ suc
     console.error('Error verifying WordPress connection:', error);
     throw error;
   }
+}
+
+export async function fetchClientExcel(clientId: string): Promise<any[]> {
+  const res = await fetch(`/api/clients/${clientId}/excel`);
+  if (!res.ok) throw new Error('Failed to fetch client Excel data');
+  const result = await res.json();
+  return result.data || [];
+}
+
+// Automation API
+export async function startClientAutomation(clientId: string): Promise<{ 
+  success: boolean; 
+  message: string; 
+  jobCount: number; 
+  batchId?: string; 
+  workerStatus?: string;
+  error?: string;
+  requiresSchedule?: boolean;
+  scheduleCount?: number;
+  nextRunAt?: string;
+  timeUntilNext?: number;
+}> {
+  const res = await fetch(`/api/automation/start/${clientId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  
+  if (!res.ok) {
+    const errorData = await res.json();
+    throw new Error(errorData.message || 'Failed to start automation');
+  }
+  
+  return await res.json();
+}
+
+export async function startMultiClientAutomation(clientIds: string[]): Promise<{
+  success: boolean;
+  message: string;
+  totalJobsEnqueued: number;
+  results: Array<{
+    clientId: string;
+    success: boolean;
+    jobCount?: number;
+    batchId?: string;
+    clientName?: string;
+    error?: string;
+    message?: string;
+  }>;
+  summary: {
+    totalClients: number;
+    successful: number;
+    failed: number;
+  };
+  workerStatus?: string;
+}> {
+  const res = await fetch('/api/automation/start-multiple', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientIds })
+  });
+  
+  if (!res.ok) {
+    const errorData = await res.json();
+    throw new Error(errorData.message || 'Failed to start multi-client automation');
+  }
+  
+  return await res.json();
+}
+
+// Worker management API
+export async function startAutomationWorker(): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/automation/worker/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) throw new Error('Failed to start worker');
+  return await res.json();
+}
+
+export async function stopAutomationWorker(): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/automation/worker/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) throw new Error('Failed to stop worker');
+  return await res.json();
+}
+
+export async function getWorkerStatus(): Promise<{ success: boolean; status: any; timestamp: string }> {
+  const res = await fetch('/api/automation/worker/status');
+  if (!res.ok) throw new Error('Failed to get worker status');
+  return await res.json();
+}
+
+// Automation Schedule API
+export async function getAutomationSchedules(clientId: string): Promise<{ success: boolean; schedules: any[]; clientId: string; clientName: string }> {
+  const res = await fetch(`/api/automation/schedules/${clientId}`);
+  if (!res.ok) throw new Error('Failed to get automation schedules');
+  return await res.json();
+}
+
+export async function createAutomationSchedule(scheduleData: any): Promise<{ success: boolean; schedule: any; message: string }> {
+  const res = await fetch('/api/automation/schedules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(scheduleData),
+  });
+  if (!res.ok) throw new Error('Failed to create automation schedule');
+  return await res.json();
+}
+
+export async function updateAutomationSchedule(id: string, scheduleData: any): Promise<{ success: boolean; schedule: any; message: string }> {
+  const res = await fetch(`/api/automation/schedules/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(scheduleData),
+  });
+  if (!res.ok) throw new Error('Failed to update automation schedule');
+  return await res.json();
+}
+
+export async function deleteAutomationSchedule(id: string): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`/api/automation/schedules/${id}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to delete automation schedule');
+  return await res.json();
+}
+
+export async function pauseAutomationSchedule(id: string): Promise<{ success: boolean; schedule: any; message: string }> {
+  const res = await fetch(`/api/automation/schedules/${id}/pause`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to pause automation schedule');
+  return await res.json();
+}
+
+export async function resumeAutomationSchedule(id: string): Promise<{ success: boolean; schedule: any; message: string }> {
+  const res = await fetch(`/api/automation/schedules/${id}/resume`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to resume automation schedule');
+  return await res.json();
+}
+
+export async function getSchedulerStatus(): Promise<{ success: boolean; isRunning: boolean; timestamp: string }> {
+  const res = await fetch('/api/automation/scheduler/status');
+  if (!res.ok) throw new Error('Failed to get scheduler status');
+  return await res.json();
+}
+
+export async function startScheduler(): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/automation/scheduler/start', {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to start scheduler');
+  return await res.json();
+}
+
+export async function stopScheduler(): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/automation/scheduler/stop', {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to stop scheduler');
+  return await res.json();
+}
+
+export async function testScheduler(): Promise<{ success: boolean; message: string; activeSchedules: number; executedCount: number; currentTime: string }> {
+  const res = await fetch('/api/automation/scheduler/test', {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to test scheduler');
+  return await res.json();
+}
+
+export async function getSchedulerDebugInfo(): Promise<{ 
+  success: boolean; 
+  currentTime: string; 
+  schedulerRunning: boolean; 
+  totalSchedules: number; 
+  schedules: any[] 
+}> {
+  const res = await fetch('/api/automation/scheduler/debug');
+  if (!res.ok) throw new Error('Failed to get scheduler debug info');
+  return await res.json();
 }

@@ -85,7 +85,7 @@ export default function Writer() {
         }
       } catch {}
 
-      const response = await sendArticleEmail({ email, title: article.title, content: article.content, articleId: (article as any).id });
+      const response = await sendArticleEmail({ email, title: article.title, content: article.content, articleId: (article as any).id, clientId: (sessionStorage.getItem('selected-client-id') || localStorage.getItem('selected-client-id') || undefined) as any });
       
       // Store article data for approval page
       const pendingPayload = {

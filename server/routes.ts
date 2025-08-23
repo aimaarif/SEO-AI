@@ -3,6 +3,8 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import axios from "axios";
 import cookieParser from "cookie-parser";
+import ExcelJS from 'exceljs';
+import { Buffer } from 'buffer';
 import { 
   insertUserSchema, 
   insertProjectSchema, 
@@ -11,27 +13,40 @@ import {
   insertArticleSchema, 
   insertDistributionSchema,
   insertCommentSchema,
-  insertClientSchema
+  insertClientSchema,
+  clientExcels
 } from "@shared/schema";
 import { encryptSecret, decryptSecret } from "./secure";
+import { db } from "./db";
+import { eq } from "drizzle-orm";
+import { AutomationProducer } from "./queue/producer.js";
 
 // Utility function to calculate optimal token usage
-function calculateOptimalTokens(wordCount: string | undefined): number {
-  if (!wordCount) return 3000; // Default fallback
+function calculateOptimalTokens(wordCount?: string): number {
+  if (!wordCount) return 3000; // Default for ~2000-2500 words
   
-  try {
-    const wordCountMatch = wordCount.match(/(\d{1,3}(?:,\d{3})*)\s*-\s*(\d{1,3}(?:,\d{3})*)/);
+  const targetRange = wordCount.match(/(\d{1,3}(?:,\d{3})*)\s*-\s*(\d{1,3}(?:,\d{3})*)/);
+  
+  if (targetRange) {
+    const minWords = parseInt(targetRange[1].replace(/,/g, ''));
+    const maxWords = parseInt(targetRange[2].replace(/,/g, ''));
     
-    if (wordCountMatch) {
-      const upperLimit = parseInt(wordCountMatch[2].replace(/,/g, ''));
-      // Efficient token calculation: 1.2x word count + buffer for HTML markup
-      return Math.min(Math.max(upperLimit * 1.2 + 300, 2000), 5000);
-    }
-  } catch (e) {
-    console.log('Failed to parse word count, using default:', e);
+    // Use the upper bound and add buffer for HTML tags
+    // Formula: (maxWords * 1.33) + 500 buffer for HTML/formatting
+    const tokensNeeded = Math.round(maxWords * 1.33 + 500);
+    
+    // Cap at 4000 to stay within API limits, minimum 1500 for decent content
+    return Math.min(Math.max(tokensNeeded, 1500), 6000);
   }
   
-  return 3000; // Default fallback
+  // Fallback parsing for single numbers
+  const singleNumber = wordCount.match(/(\d{1,3}(?:,\d{3})*)/);
+  if (singleNumber) {
+    const words = parseInt(singleNumber[1].replace(/,/g, ''));
+    return Math.min(Math.max(Math.round(words * 1.33 + 500), 1500), 6000);
+  }
+  
+  return 3000; // Safe default
 }
 
 interface SearchResult {
@@ -460,8 +475,13 @@ Return JSON:
   "wordCount": "2,000 - 2,500 words"
 }`;
 
+    // Debugging: Log prompt details
+    console.log(`[DEBUG] Prompt sent to ChatGPT:\n${prompt}`);
+    console.log(`[DEBUG] Prompt character count: ${prompt.length}`);
+    console.log(`[DEBUG] Prompt word count: ${prompt.split(/\s+/).filter((word: string) => word.length > 0).length}`);
+
     const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-3.5-turbo',
+      model: 'gpt-4o',
       messages: [
         {
           role: 'system',
@@ -483,6 +503,15 @@ Return JSON:
     });
 
     const content = response.data.choices[0].message.content;
+    const usage = response.data.usage; // Get token usage data
+
+    // Debugging: Log response details and token usage
+    console.log(`[DEBUG] Response received from ChatGPT:\n${content}`);
+    console.log(`[DEBUG] Response character count: ${content.length}`);
+    console.log(`[DEBUG] Response word count: ${content.split(/\s+/).filter((word: string) => word.length > 0).length}`);
+    if (usage) {
+      console.log(`[DEBUG] Token Usage - Prompt: ${usage.prompt_tokens}, Completion: ${usage.completion_tokens}, Total: ${usage.total_tokens}`);
+    }
     
     try {
       const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -506,7 +535,7 @@ Return JSON:
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Enable cookie parsing for OAuth token persistence
+  // Enable cookie parsing
   app.use(cookieParser());
   
   // Resolve a usable project id. Maps placeholder "default-project" (or missing)
@@ -578,23 +607,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const data = insertClientSchema.parse(payload);
       const encrypted = { ...payload } as any;
       
-      // Encrypt sensitive fields based on connection type
-      if (encrypted.connectionType === 'oauth') {
-        if (encrypted.wpClientSecret) encrypted.wpClientSecret = encryptSecret(encrypted.wpClientSecret);
-        if (encrypted.wpAccessToken) encrypted.wpAccessToken = encryptSecret(encrypted.wpAccessToken);
-        if (encrypted.wpRefreshToken) encrypted.wpRefreshToken = encryptSecret(encrypted.wpRefreshToken);
-      } else if (encrypted.connectionType === 'application_password') {
-        if (encrypted.wpAppPassword) encrypted.wpAppPassword = encryptSecret(encrypted.wpAppPassword);
-      }
+      // Encrypt sensitive fields
+      if (encrypted.wpAppPassword) encrypted.wpAppPassword = encryptSecret(encrypted.wpAppPassword);
       
       const created = await storage.createClient(encrypted);
       const sanitized: any = { ...created };
       
       // Sanitize sensitive fields
-      if (sanitized.wpClientSecret) sanitized.wpClientSecret = "__encrypted__";
       if (sanitized.wpAppPassword) sanitized.wpAppPassword = "__encrypted__";
-      delete sanitized.wpAccessToken; 
-      delete sanitized.wpRefreshToken;
       
       res.status(201).json(sanitized);
     } catch (error) {
@@ -608,23 +628,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const updateData = insertClientSchema.partial().parse(req.body);
       const payload = { ...updateData } as any;
       
-      // Encrypt sensitive fields based on connection type
-      if (payload.connectionType === 'oauth') {
-        if (payload.wpClientSecret && payload.wpClientSecret !== "__encrypted__") payload.wpClientSecret = encryptSecret(payload.wpClientSecret);
-        if (payload.wpAccessToken) payload.wpAccessToken = encryptSecret(payload.wpAccessToken);
-        if (payload.wpRefreshToken) payload.wpRefreshToken = encryptSecret(payload.wpRefreshToken);
-      } else if (payload.connectionType === 'application_password') {
-        if (payload.wpAppPassword && payload.wpAppPassword !== "__encrypted__") payload.wpAppPassword = encryptSecret(payload.wpAppPassword);
-      }
+      // Encrypt sensitive fields
+      if (payload.wpAppPassword && payload.wpAppPassword !== "__encrypted__") payload.wpAppPassword = encryptSecret(payload.wpAppPassword);
       
       const updated = await storage.updateClient(req.params.id, payload);
       const sanitized: any = { ...updated };
       
       // Sanitize sensitive fields
-      if (sanitized.wpClientSecret) sanitized.wpClientSecret = "__encrypted__";
       if (sanitized.wpAppPassword) sanitized.wpAppPassword = "__encrypted__";
-      delete sanitized.wpAccessToken; 
-      delete sanitized.wpRefreshToken;
       
       res.json(sanitized);
     } catch (error) {
@@ -640,195 +651,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ error: "Failed to delete client" });
     }
   });
-  // Removed legacy global WordPress OAuth routes. Use per-client routes exclusively.
-
-  // Multi-client WordPress OAuth: start auth for a specific client
-  app.get("/auth/wordpress/:clientId", async (req, res) => {
-    try {
-      const { clientId } = req.params;
-      const { articleId } = req.query as { articleId?: string };
-      const client = await storage.getClient(clientId);
-      if (!client) return res.status(404).json({ error: "Client not found" });
-      if (!client.wpClientId || !client.wpRedirectUri) {
-        return res.status(400).json({ error: "Client is missing OAuth credentials" });
-      }
-      const state = encodeURIComponent(JSON.stringify({ clientId, articleId }));
-      const authUrl = `https://public-api.wordpress.com/oauth2/authorize?client_id=${encodeURIComponent(
-        client.wpClientId
-      )}&redirect_uri=${encodeURIComponent(client.wpRedirectUri)}&response_type=code&state=${state}&scope=${encodeURIComponent('global')}`;
-      return res.redirect(authUrl);
-    } catch (error) {
-      console.error("/auth/wordpress/:clientId error:", error);
-      res.status(500).json({ error: "Failed to start client OAuth" });
-    }
-  });
-
-  // Fallback OAuth callback without clientId: extract from state and redirect to per-client handler
-  app.get("/oauth/callback", async (req, res) => {
-    try {
-      const { state } = req.query as { state?: string };
-      let clientId: string | undefined;
-      try {
-        if (state && typeof state === 'string') {
-          const parsed = JSON.parse(state);
-          if (parsed && typeof parsed.clientId === 'string') {
-            clientId = parsed.clientId;
-          }
-        }
-      } catch {}
-      if (!clientId && typeof (req.query as any).clientId === 'string') {
-        clientId = (req.query as any).clientId as string;
-      }
-      if (!clientId) {
-        return res.status(400).json({ error: "Missing clientId in OAuth state" });
-      }
-      const params = new URLSearchParams(req.query as any).toString();
-      const destination = `/oauth/callback/${encodeURIComponent(clientId)}${params ? `?${params}` : ''}`;
-      return res.redirect(destination);
-    } catch (error) {
-      console.error("/oauth/callback (no clientId) error:", error);
-      return res.status(500).json({ error: "Failed to route OAuth callback" });
-    }
-  });
-
-  // Handle legacy or generic redirect path "/callback" by forwarding to per-client handler
-  app.get("/callback", async (req, res) => {
-    try {
-      const { state } = req.query as { state?: string };
-      let clientId: string | undefined;
-      try {
-        if (state && typeof state === 'string') {
-          const parsed = JSON.parse(state);
-          if (parsed && typeof parsed.clientId === 'string') {
-            clientId = parsed.clientId;
-          }
-        }
-      } catch {}
-      if (!clientId && typeof (req.query as any).clientId === 'string') {
-        clientId = (req.query as any).clientId as string;
-      }
-      if (!clientId) {
-        return res.status(400).json({ error: "Missing clientId in OAuth state" });
-      }
-      const params = new URLSearchParams(req.query as any).toString();
-      const destination = `/oauth/callback/${encodeURIComponent(clientId)}${params ? `?${params}` : ''}`;
-      return res.redirect(destination);
-    } catch (error) {
-      console.error("/callback alias error:", error);
-      return res.status(500).json({ error: "Failed to route WordPress callback" });
-    }
-  });
-
-  // OAuth callback per client
-  app.get("/oauth/callback/:clientId", async (req, res) => {
-    try {
-      const { clientId } = req.params;
-      const { code, state } = req.query as { code?: string; state?: string };
-      const client = await storage.getClient(clientId);
-      if (!client) return res.status(404).json({ error: "Client not found" });
-      if (!code) return res.status(400).json({ error: "Missing authorization code" });
-      if (!client.wpClientId || !client.wpClientSecret || !client.wpRedirectUri) {
-        return res.status(400).json({ error: "Client is missing OAuth credentials" });
-      }
-      const body = new URLSearchParams();
-      body.append("client_id", client.wpClientId);
-      body.append("client_secret", decryptSecret(client.wpClientSecret));
-      body.append("redirect_uri", client.wpRedirectUri);
-      body.append("code", code);
-      body.append("grant_type", "authorization_code");
-
-      const tokenResp = await axios.post(
-        "https://public-api.wordpress.com/oauth2/token",
-        body.toString(),
-        { headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 15000 }
-      );
-
-      const accessToken = tokenResp.data?.access_token as string | undefined;
-      const refreshToken = tokenResp.data?.refresh_token as string | undefined;
-      const expiresIn = tokenResp.data?.expires_in as number | undefined;
-      const tokenExpiry = expiresIn ? new Date(Date.now() + (expiresIn - 60) * 1000) : undefined;
-
-      try {
-        console.log("OAuth callback token exchange:", {
-          clientId,
-          hasAccessToken: !!accessToken,
-          hasRefreshToken: !!refreshToken,
-          expiresIn,
-          tokenExpiryISO: tokenExpiry ? tokenExpiry.toISOString() : null,
-        });
-      } catch {}
-
-      await storage.updateClient(clientId, {
-        wpAccessToken: accessToken ? encryptSecret(accessToken) : undefined,
-        wpRefreshToken: refreshToken ? encryptSecret(refreshToken) : undefined,
-        tokenExpiry,
-      } as any);
-
-      let articleId: string | undefined;
-      try {
-        if (state && typeof state === 'string') {
-          const parsed = JSON.parse(state);
-          articleId = parsed?.articleId;
-        }
-      } catch {}
-
-      // Redirect to approval page, preserving articleId if present
-      const redirect = `/approval${articleId ? `?articleId=${encodeURIComponent(articleId)}` : ''}`;
-      res.redirect(redirect);
-    } catch (error) {
-      console.error("/oauth/callback/:clientId error:", error);
-      res.status(500).json({ error: "Failed to complete client OAuth" });
-    }
-  });
-
-  async function ensureValidClientToken(clientId: string): Promise<{ accessToken: string; client: any }> {
-    const client = await storage.getClient(clientId);
-    if (!client) throw new Error("Client not found");
-    if (!client.wpAccessToken) throw new Error("Client not connected to WordPress");
-    const now = new Date();
-    const tokenExpiry = client.tokenExpiry ? new Date(client.tokenExpiry) : undefined;
-    // If token expiry known and still valid, use it
-    if (tokenExpiry && tokenExpiry.getTime() > now.getTime()) {
-      return { accessToken: decryptSecret(client.wpAccessToken), client };
-    }
-    // If no expiry recorded, assume current access token is valid
-    if (!tokenExpiry) {
-      return { accessToken: decryptSecret(client.wpAccessToken), client };
-    }
-    // Otherwise, attempt to refresh
-    if (!client.wpRefreshToken || !client.wpClientId || !client.wpClientSecret) {
-      throw new Error("Missing refresh credentials");
-    }
-    try { console.log("Refreshing WordPress token for client", clientId); } catch {}
-    const body = new URLSearchParams();
-    body.append("client_id", client.wpClientId);
-    body.append("client_secret", decryptSecret(client.wpClientSecret));
-    body.append("grant_type", "refresh_token");
-    body.append("refresh_token", decryptSecret(client.wpRefreshToken));
-
-    const tokenResp = await axios.post(
-      "https://public-api.wordpress.com/oauth2/token",
-      body.toString(),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 15000 }
-    );
-    const newAccess = tokenResp.data?.access_token as string | undefined;
-    const newRefresh = tokenResp.data?.refresh_token as string | undefined;
-    const expiresIn = tokenResp.data?.expires_in as number | undefined;
-    const tokenExpiryNew = expiresIn ? new Date(Date.now() + (expiresIn - 60) * 1000) : undefined;
-    await storage.updateClient(clientId, {
-      wpAccessToken: newAccess ? encryptSecret(newAccess) : undefined,
-      wpRefreshToken: newRefresh ? encryptSecret(newRefresh) : undefined,
-      tokenExpiry: tokenExpiryNew,
-    } as any);
-    return { accessToken: newAccess || decryptSecret(client.wpAccessToken), client: await storage.getClient(clientId) };
-  }
 
   // Explicit token refresh endpoint
   app.post("/api/clients/:clientId/refresh-token", async (req, res) => {
     try {
       const { clientId } = req.params;
-      const { accessToken } = await ensureValidClientToken(clientId);
-      res.json({ success: true, accessToken: !!accessToken });
+      res.json({ success: true, message: "Application password authentication does not require token refresh" });
     } catch (e: any) {
       res.status(400).json({ error: e?.message || "Failed to refresh token" });
     }
@@ -841,39 +669,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const client = await storage.getClient(clientId);
       if (!client) return res.status(404).json({ error: "Client not found" });
       if (!client.wpSiteUrl) return res.status(400).json({ error: "WordPress site URL is required" });
-
+      if (!client.wpUsername || !client.wpAppPassword) {
+        return res.status(400).json({ error: "Username and application password are required" });
+      }
+      
       let isValid = false;
       let error = "";
-
-      if (client.connectionType === 'oauth') {
-        try {
-          const { accessToken } = await ensureValidClientToken(clientId);
-          // Test the connection by making a simple API call
-          const response = await axios.get(`${client.wpSiteUrl}/wp-json/wp/v2/users/me`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-            timeout: 10000
-          });
-          isValid = response.status === 200;
-        } catch (e: any) {
-          error = e?.message || "OAuth connection failed";
-        }
-      } else if (client.connectionType === 'application_password') {
-        if (!client.wpUsername || !client.wpAppPassword) {
-          return res.status(400).json({ error: "Username and application password are required" });
-        }
-        
-        try {
-          const credentials = Buffer.from(`${client.wpUsername}:${decryptSecret(client.wpAppPassword)}`).toString('base64');
-          const response = await axios.get(`${client.wpSiteUrl}/wp-json/wp/v2/users/me`, {
-            headers: { Authorization: `Basic ${credentials}` },
-            timeout: 10000
-          });
-          isValid = response.status === 200;
-        } catch (e: any) {
-          error = e?.message || "Application password authentication failed";
-        }
-      } else {
-        return res.status(400).json({ error: "Invalid connection type" });
+      
+      try {
+        const credentials = Buffer.from(`${client.wpUsername}:${decryptSecret(client.wpAppPassword)}`).toString('base64');
+        const response = await axios.get(`${client.wpSiteUrl}/wp-json/wp/v2/users/me`, {
+          headers: { Authorization: `Basic ${credentials}` },
+          timeout: 10000
+        });
+        isValid = response.status === 200;
+      } catch (e: any) {
+        error = e?.message || "Application password authentication failed";
       }
 
       res.json({ success: isValid, error: isValid ? "" : error });
@@ -920,21 +731,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const payload = { title: article.title, content: article.content, status: "draft" };
       let headers: any = { "Content-Type": "application/json" };
       
-      // Set up authentication based on connection type
-      if (client.connectionType === 'oauth') {
-        const { accessToken } = await ensureValidClientToken(clientId);
-        headers.Authorization = `Bearer ${accessToken}`;
-      } else if (client.connectionType === 'application_password') {
-        if (!client.wpUsername || !client.wpAppPassword) {
-          return res.status(400).json({ error: "Username and application password are required" });
-        }
-        const credentials = Buffer.from(`${client.wpUsername}:${decryptSecret(client.wpAppPassword)}`).toString('base64');
+      // Set up authentication using application password
+      if (!client.wpUsername || !client.wpAppPassword) {
+        return res.status(400).json({ error: "Username and application password are required" });
+      }
+      
+      try {
+        const decryptedPassword = decryptSecret(client.wpAppPassword);
+        const credentials = Buffer.from(`${client.wpUsername}:${decryptedPassword}`).toString('base64');
         headers.Authorization = `Basic ${credentials}`;
-      } else {
-        return res.status(400).json({ error: "Invalid connection type" });
+      } catch (decryptError) {
+        console.error("Failed to decrypt WordPress password:", decryptError);
+        return res.status(500).json({ error: "Failed to decrypt WordPress password" });
       }
 
-      try { console.log("Publishing draft to:", endpoint, "for client", clientId, "using", client.connectionType); } catch {}
+      try { console.log("Publishing draft to:", endpoint, "for client", clientId, "using application password"); } catch {}
       const postResp = await axios.post(endpoint, payload, {
         headers,
         timeout: 15000,
@@ -964,7 +775,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             description: 'Draft created on WordPress',
             articleId,
             clientId,
-            metadata: { wpPostId, link: wpLink, connectionType: client.connectionType }
+            metadata: { wpPostId, link: wpLink, connectionType: 'application_password' }
           } as any);
         } catch {}
       } catch {}
@@ -1598,6 +1409,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Create a constant for the Excel file path
+const EXCEL_FILE_PATH = './keyword-research-data.xlsx';
+
+app.post('/api/keywords/export', async (req: Request, res: Response) => {
+  try {
+    const { keywords, projectId } = req.body;
+    
+    // Create a new workbook or load existing one
+    let workbook: ExcelJS.Workbook;
+    try {
+      workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(EXCEL_FILE_PATH);
+      console.log('Loaded existing Excel file');
+    } catch {
+      workbook = new ExcelJS.Workbook();
+      workbook.addWorksheet('Keyword Research');
+      console.log('Created new Excel file');
+    }
+
+    const worksheet = workbook.getWorksheet('Keyword Research') || workbook.addWorksheet('Keyword Research');
+
+    // If worksheet is empty, add headers
+    if (worksheet.rowCount === 0) {
+      worksheet.addRow([
+        'Keyword',
+        'Type',
+        'Volume',
+        'Difficulty',
+        'Intent',
+        'Priority',
+        'Status',
+        'Created At',
+        'Automation',
+        'Project ID',
+        'Export Date'
+      ]);
+    }
+
+    // Add new data
+    const currentDate = new Date().toISOString();
+    keywords.forEach((kw: any) => {
+      worksheet.addRow([
+        kw.keyword,
+        kw.type || '',
+        kw.volume || 0,
+        kw.difficulty || 0,
+        kw.intent || '',
+        kw.priority || 0,
+        kw.status || '',
+        kw.createdAt || '',
+        kw.automation || 'pending',
+        projectId,
+        currentDate
+      ]);
+    });
+
+    // Save the workbook
+    await workbook.xlsx.writeFile(EXCEL_FILE_PATH);
+
+    // Send the updated file to the client
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=keyword-research-${new Date().toISOString().split('T')[0]}.xlsx`);
+    
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.send(buffer);
+
+  } catch (error) {
+    console.error('Export error:', error);
+    res.status(500).json({ error: 'Failed to export keywords' });
+  }
+});
+
   // AI Content Brief Generation routes
   app.post("/api/generate-brief", async (req, res) => {
     try {
@@ -1689,6 +1572,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         contentBriefId?: string;
         clientId?: string;
       };
+      
       if (!title || !Array.isArray(keyPoints) || keyPoints.length === 0) {
         return res.status(400).json({ error: "title and keyPoints are required" });
       }
@@ -1702,37 +1586,105 @@ export async function registerRoutes(app: Express): Promise<Server> {
           <p class="text-muted-foreground leading-relaxed mb-4">This is a mock article generated without an API key. Add OPENAI_API_KEY to generate real content.</p>
           ${keyPoints.map((kp, i) => `<h2 class=\"text-2xl font-semibold mt-6 mb-3\">${i+1}. ${kp}</h2><p class=\"text-muted-foreground leading-relaxed\">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>`).join('')}
         `;
+      // ... existing code ...
       } else {
-
-        // Calculate max_tokens more efficiently
+        // Calculate max_tokens with improved algorithm
         let maxTokens = calculateOptimalTokens(wordCount);
-        console.log(`Using max_tokens: ${maxTokens}`);
+        console.log(`Target word count: ${wordCount}, Using max_tokens: ${maxTokens}`);
 
-        // Optimized system message - concise but effective
-        const systemMessage = `Content writer. Generate articles matching word count. Use HTML h2/h3 headings. Output clean HTML.`;
+        // Enhanced system message with explicit word count enforcement
+        const systemMessage = `You are a professional content writer who EXACTLY meets word count requirements. You ONLY output HTML format. Never use Markdown syntax.
 
-        // Streamlined user prompt - remove redundancy
-        const sectionBullets = keyPoints.map((kp, i) => `${i + 1}. ${kp}`).join("\n");
-        const audienceText = targetAudience ? `Audience: ${targetAudience}.` : '';
-        const wordCountText = wordCount ? `Words: ${wordCount}.` : '';
+CRITICAL REQUIREMENTS:
+- Generate content that EXACTLY matches the specified word count range
+- DO NOT generate content that's significantly shorter than requested
+- Count words after removing HTML tags
+- If you cannot meet the word count, continue adding relevant content until you do
+
+FORMATTING RULES:
+- Use <h2> tags for main sections
+- Use <h3> tags for subsections  
+- Use <p> tags for paragraphs
+- Use <strong> tags for bold text
+- Use <em> tags for italic text
+- Use <ul> and <li> for lists
+
+WORD COUNT STRATEGY:
+- Write comprehensive, detailed content
+- Include multiple examples for each point
+- Add case studies and real-world scenarios
+- Provide actionable tips and step-by-step instructions
+- Include relevant statistics and data
+- Add expert quotes and insights
+- Expand on implications and future considerations`;
+
+        // Extract target numbers for precise word count enforcement
+        let targetWordsText = '';
+        let minWords = 2000;
+        let maxWords = 2500;
         
-        const userPrompt = `Article: "${title}"
+        if (wordCount) {
+          const targetRange = wordCount.match(/(\d{1,3}(?:,\d{3})*)\s*-\s*(\d{1,3}(?:,\d{3})*)/);
+          if (targetRange) {
+            minWords = parseInt(targetRange[1].replace(/,/g, ''));
+            maxWords = parseInt(targetRange[2].replace(/,/g, ''));
+            targetWordsText = `MANDATORY WORD COUNT: ${minWords}-${maxWords} words. You MUST generate content within this range. Do not stop until you reach at least ${minWords} words.`;
+          }
+        }
+
+        // Ultra-detailed prompt that forces comprehensive content
+        const sectionBullets = keyPoints.map((kp, i) => `${i + 1}. ${kp}`).join("\n");
+        const audienceText = targetAudience ? `Target Audience: ${targetAudience}` : '';
+        
+        const userPrompt = `Write a comprehensive article: "${title}"
+
+${targetWordsText}
 
 ${audienceText}
-${wordCountText}
 
-Outline:
-${sectionBullets}
+REQUIRED STRUCTURE:
+- Introduction (200-300 words)
+${keyPoints.map((kp, i) => `- Section ${i+1}: ${kp} (400-500 words each)`).join('\n')}
+- Conclusion (200-300 words)
 
-Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length: ${wordCount || '2000-3000 words'}.`;
+CONTENT EXPANSION STRATEGIES:
+1. For each key point, provide:
+   - Detailed explanation (150-200 words)
+   - Real-world example with specifics (100-150 words)
+   - Step-by-step implementation guide (100-150 words)
+   - Common mistakes and solutions (50-100 words)
+   - Tools and resources needed (50-100 words)
 
-        // Log token usage for monitoring
-        const estimatedInputTokens = systemMessage.length / 4 + userPrompt.length / 4;
-        console.log(`Estimated input tokens: ~${Math.round(estimatedInputTokens)}`);
-        console.log(`Total estimated cost: ~${Math.round((estimatedInputTokens + maxTokens) / 1000 * 0.002)} USD`);
+2. Add depth with:
+   - Industry statistics and data
+   - Expert opinions and quotes
+   - Case studies from successful implementations
+   - Future trends and predictions
+   - Cost-benefit analysis
+   - Comparison with alternatives
+
+3. Include practical elements:
+   - Detailed checklists
+   - Templates and frameworks
+   - Troubleshooting guides
+   - Resource lists with links
+   - Best practices compilation
+
+4. Enhance engagement:
+   - Storytelling elements
+   - Visual descriptions
+   - Interactive elements suggestions
+   - Call-to-action sections
+
+Generate the complete HTML article now. Ensure you reach the target word count by being thorough and comprehensive.`;
+
+        // Log for debugging
+        const estimatedInputTokens = Math.round((systemMessage.length + userPrompt.length) / 4);
+        console.log(`Estimated input tokens: ~${estimatedInputTokens}`);
+        console.log(`Max output tokens: ${maxTokens}`);
 
         const completion = await axios.post('https://api.openai.com/v1/chat/completions', {
-          model: 'gpt-3.5-turbo',
+          model: 'gpt-4o',
           messages: [
             { role: 'system', content: systemMessage },
             { role: 'user', content: userPrompt }
@@ -1744,14 +1696,20 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
             Authorization: `Bearer ${openaiApiKey}`,
             'Content-Type': 'application/json'
           },
-          timeout: 30000 // 30 second timeout
+          timeout: 60000 // Increased timeout for comprehensive generation
         });
 
         articleContent = completion.data.choices?.[0]?.message?.content || '';
         
-        // Validate word count
+        // Single attempt validation - log but don't retry
         if (wordCount && articleContent) {
-          const actualWordCount = articleContent.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().split(/\s+/).filter((word: string) => word.length > 0).length;
+          const actualWordCount = articleContent
+            .replace(/<[^>]*>/g, '') // Remove HTML tags
+            .replace(/\s+/g, ' ')     // Normalize spaces
+            .trim()
+            .split(/\s+/)
+            .filter((word: string) => word.length > 0).length;
+            
           const targetRange = wordCount.match(/(\d{1,3}(?:,\d{3})*)\s*-\s*(\d{1,3}(?:,\d{3})*)/);
           
           if (targetRange) {
@@ -1760,8 +1718,78 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
             
             console.log(`Generated article: ${actualWordCount} words, Target: ${minWords}-${maxWords} words`);
             
+            // Log warning if short, but don't retry
             if (actualWordCount < minWords) {
-              console.log(`WARNING: Generated article is too short. Expected: ${minWords}-${maxWords}, Got: ${actualWordCount}`);
+              console.log(`Warning: Article is ${actualWordCount} words, target was ${minWords}-${maxWords}. Consider adjusting prompt or max_tokens.`);
+            }
+          }
+        }
+
+        articleContent = completion.data.choices?.[0]?.message?.content || '';
+        
+        // Enhanced word count validation with retry logic
+        if (wordCount && articleContent) {
+          const actualWordCount = articleContent
+            .replace(/<[^>]*>/g, '') // Remove HTML tags
+            .replace(/\s+/g, ' ')     // Normalize spaces
+            .trim()
+            .split(/\s+/)
+            .filter((word: string) => word.length > 0).length;
+            
+          const targetRange = wordCount.match(/(\d{1,3}(?:,\d{3})*)\s*-\s*(\d{1,3}(?:,\d{3})*)/);
+          
+          if (targetRange) {
+            const minWords = parseInt(targetRange[1].replace(/,/g, ''));
+            const maxWords = parseInt(targetRange[2].replace(/,/g, ''));
+            
+            console.log(`Generated article: ${actualWordCount} words, Target: ${minWords}-${maxWords} words`);
+            
+            // If significantly under target, try again with more aggressive prompting
+            if (actualWordCount < minWords * 0.8) { // Less than 80% of minimum
+              console.log(`Article too short (${actualWordCount}/${minWords}), attempting retry with expansion...`);
+              
+              const expansionPrompt = `The previous article was too short (${actualWordCount} words). Expand it to reach ${minWords}-${maxWords} words by:
+  - Adding more detailed explanations and examples
+  - Including additional subsections with h3 headings
+  - Expanding each key point with practical applications
+  - Adding case studies or real-world scenarios
+  - Including actionable tips and best practices
+
+  Article to expand: ${articleContent}
+
+  Return the expanded version that meets the ${minWords}-${maxWords} word target.`;
+
+              try {
+                const expansionCompletion = await axios.post('https://api.openai.com/v1/chat/completions', {
+                  model: 'gpt-4o',
+                  messages: [
+                    { role: 'system', content: 'Content expansion specialist. Take existing articles and expand them to meet word count requirements while maintaining quality.' },
+                    { role: 'user', content: expansionPrompt }
+                  ],
+                  temperature: 0.7,
+                  max_tokens: Math.min(maxTokens + 1000, 6000) // Extra tokens for expansion
+                }, {
+                  headers: {
+                    Authorization: `Bearer ${openaiApiKey}`,
+                    'Content-Type': 'application/json'
+                  },
+                  timeout: 45000
+                });
+
+                const expandedContent = expansionCompletion.data.choices?.[0]?.message?.content;
+                if (expandedContent) {
+                  articleContent = expandedContent;
+                  const finalWordCount = articleContent
+                    .replace(/<[^>]*>/g, '')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .split(/\s+/)
+                    .filter((word: string) => word.length > 0).length;
+                  console.log(`Expanded article: ${finalWordCount} words`);
+                }
+              } catch (expansionError) {
+                console.log('Expansion attempt failed, using original content');
+              }
             }
           }
         }
@@ -1801,6 +1829,7 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
             metadata: { wordCount }
           } as any);
         } catch {}
+        
         return res.json({ 
           title, 
           content: articleContent,
@@ -1842,7 +1871,7 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
   // Email sending endpoint
   app.post("/api/send-article-email", async (req, res) => {
     try {
-      const { email, title, content, articleId: providedArticleId } = req.body as { email?: string; title?: string; content?: string; articleId?: string };
+      const { email, title, content, articleId: providedArticleId, clientId: providedClientId } = req.body as { email?: string; title?: string; content?: string; articleId?: string; clientId?: string };
       if (!email || !title || !content) {
         return res.status(400).json({ error: "email, title and content are required" });
       }
@@ -1863,9 +1892,9 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
       const clientUrl = 'http://localhost:5000';
 
       // Resolve clientId for email approval links
-      let clientIdForEmail: string | undefined;
+      let clientIdForEmail: string | undefined = providedClientId;
       try {
-        if (providedArticleId) {
+        if (!clientIdForEmail && providedArticleId) {
           const articleFromDb = await storage.getArticle(providedArticleId);
           clientIdForEmail = (articleFromDb as any)?.clientId || undefined;
           console.log(`[EMAIL SEND] Client ID from article: ${clientIdForEmail || 'not found'}`);
@@ -2063,7 +2092,7 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
         return res.status(404).json({ error: "Client not found" });
       }
       
-      console.log(`[EMAIL APPROVAL] Found client: ${client.brandName}, Connection type: ${client.connectionType}`);
+      console.log(`[EMAIL APPROVAL] Found client: ${client.brandName}, Connection type: application_password`);
       
       if (!client.wpSiteUrl) {
         console.error(`[EMAIL APPROVAL] Client missing WordPress site URL: ${targetClientId}`);
@@ -2071,14 +2100,7 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
       }
       
       // Check if client has proper credentials
-      if (client.connectionType === 'oauth' && !client.wpAccessToken) {
-        console.error(`[EMAIL APPROVAL] Client missing OAuth token: ${targetClientId}`);
-        return res.status(400).json({ 
-          error: "Client needs to reconnect to WordPress. Please contact support." 
-        });
-      }
-      
-      if (client.connectionType === 'application_password' && (!client.wpUsername || !client.wpAppPassword)) {
+      if (!client.wpUsername || !client.wpAppPassword) {
         console.error(`[EMAIL APPROVAL] Client missing app password credentials: ${targetClientId}`);
         return res.status(400).json({ 
           error: "Client is missing WordPress credentials. Please contact support." 
@@ -2111,26 +2133,13 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
       const payload = { title: article.title, content: article.content, status: "draft" };
       let headers: any = { "Content-Type": "application/json" };
       
-      // Set up authentication based on connection type
-      if (client.connectionType === 'oauth') {
-        try {
-          const { accessToken } = await ensureValidClientToken(targetClientId);
-          headers.Authorization = `Bearer ${accessToken}`;
-          console.log(`[EMAIL APPROVAL] Using OAuth token for client: ${targetClientId}`);
-        } catch (tokenError) {
-          console.error(`[EMAIL APPROVAL] OAuth token error for client ${targetClientId}:`, tokenError);
-          return res.status(400).json({ 
-            error: "Client needs to reconnect to WordPress. Please contact support." 
-          });
-        }
-      } else if (client.connectionType === 'application_password') {
-        const credentials = Buffer.from(`${client.wpUsername}:${decryptSecret(client.wpAppPassword || '')}`).toString('base64');
-        headers.Authorization = `Basic ${credentials}`;
-        console.log(`[EMAIL APPROVAL] Using app password for client: ${targetClientId}`);
-      } else {
-        console.error(`[EMAIL APPROVAL] Invalid connection type: ${client.connectionType}`);
-        return res.status(400).json({ error: "Invalid connection type" });
+      // Set up authentication using application password
+      if (!client.wpUsername || !client.wpAppPassword) {
+        return res.status(400).json({ error: "Username and application password are required" });
       }
+      const credentials = Buffer.from(`${client.wpUsername}:${decryptSecret(client.wpAppPassword || '')}`).toString('base64');
+      headers.Authorization = `Basic ${credentials}`;
+      console.log(`[EMAIL APPROVAL] Using app password for client: ${targetClientId}`);
       
       console.log(`[EMAIL APPROVAL] Publishing to WordPress...`);
       const postResp = await axios.post(endpoint, payload, {
@@ -2176,7 +2185,7 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
             description: 'Draft created on WordPress via email approval',
             articleId,
             clientId: targetClientId,
-            metadata: { wpPostId, link: wpLink, connectionType: client.connectionType, approvedVia: 'email' }
+            metadata: { wpPostId, link: wpLink, connectionType: 'application_password', approvedVia: 'email' }
           } as any);
           console.log(`[EMAIL APPROVAL] Activity record created`);
         } catch (activityError) {
@@ -2220,7 +2229,7 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
       const serverUrl = process.env.SERVER_URL || 'http://localhost:5000';
       const clientOptions = allClients.map((c) => {
         const href = `${serverUrl}/api/email/approve/${encodeURIComponent(articleId)}?clientId=${encodeURIComponent(c.id)}`;
-        const connection = c.connectionType === 'oauth' ? 'OAuth' : (c.connectionType === 'application_password' ? 'App Password' : 'Unknown');
+        const connection = 'App Password';
         return `<li style="margin:8px 0;"><a href="${href}" style="display:inline-block;padding:10px 14px;border-radius:6px;background:#111;color:#fff;text-decoration:none;">Approve & Publish as ${escapeHtml(c.brandName || 'Client')} (${connection})</a></li>`;
       }).join('');
 
@@ -2234,7 +2243,7 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
   <body style="font-family: Arial, sans-serif; background:#0b0b0b; color:#e5e7eb; padding:24px;">
     <div style="max-width:640px;margin:0 auto;">
       <h1 style="margin:0 0 16px 0;">Select Client to Publish</h1>
-      <p style="margin:0 0 16px 0;color:#9ca3af;">Multiple clients are configured. Choose which client’s WordPress to publish this article to.</p>
+      <p style="margin:0 0 16px 0;color:#9ca3af;">Multiple clients are configured. Choose which client's WordPress to publish this article to.</p>
       <ul style="list-style:none;padding:0;margin:0;">${clientOptions}</ul>
       <p style="margin-top:24px;color:#9ca3af;">Article ID: ${escapeHtml(articleId)}</p>
     </div>
@@ -2252,7 +2261,7 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
     }
   });
 
-  function escapeHtml(input) {
+  function escapeHtml(input: unknown) {
     try {
       return String(input)
         .replace(/&/g, '&amp;')
@@ -2360,6 +2369,927 @@ Use h2/h3 headings, paragraphs. Keep professional tone. Include examples. Length
       const errorUrl = `${clientUrl}/approval?error=${encodeURIComponent(message)}&articleId=${req.params.articleId}`;
       
       res.redirect(errorUrl);
+    }
+  });
+
+  // Fetch client Excel data
+  app.get("/api/clients/:clientId/excel", async (req, res) => {
+    try {
+      const { clientId } = req.params as { clientId: string };
+      
+      const client = await storage.getClient(clientId);
+      if (!client) return res.status(404).json({ error: "Client not found" });
+
+      // Fetch all Excel data for this client
+      const excelData = await db.select().from(clientExcels).where(eq(clientExcels.clientId, clientId)).orderBy(clientExcels.createdAt);
+      
+      return res.json({ success: true, data: excelData });
+    } catch (error) {
+      console.error('Fetch client Excel error:', error);
+      res.status(500).json({ error: 'Failed to fetch Excel data' });
+    }
+  });
+
+  // Upload client Excel (base64) and store rows as JSON
+  app.post("/api/clients/:clientId/upload-excel", async (req, res) => {
+    try {
+      const { clientId } = req.params as { clientId: string };
+      const { fileName, base64 } = req.body as { fileName?: string; base64?: string };
+      if (!base64) return res.status(400).json({ error: "base64 is required" });
+
+      const client = await storage.getClient(clientId);
+      if (!client) return res.status(404).json({ error: "Client not found" });
+
+      // Decode base64 to buffer then parse with ExcelJS
+      const buffer = Buffer.from(base64.replace(/^data:.*;base64,/, ''), 'base64');
+      const workbook = new ExcelJS.Workbook();
+      await (workbook.xlsx as any).load(buffer as any);
+      const sheet = workbook.worksheets[0];
+      if (!sheet) return res.status(400).json({ error: "Excel has no sheets" });
+
+      // Read header (first row)
+      const headerRow = sheet.getRow(1);
+      const headers: string[] = [];
+      headerRow.eachCell((cell) => headers.push(String(cell.value || '').trim()));
+
+      // Validate required columns
+      const requiredKeywordHeaders = ["keyword", "keywords"]; // Allow 'keyword' or 'keywords'
+      const lowerHeaders = headers.map(h => h.toLowerCase());
+      
+      const hasKeywordColumn = requiredKeywordHeaders.some(r => lowerHeaders.includes(r));
+      if (!hasKeywordColumn) {
+        return res.status(400).json({ error: `Missing required column: 'keyword' or 'keywords'` });
+      }
+
+      // "content-type" and "target-audience" are now optional
+      // No explicit check needed here for their presence as they are not strictly required
+
+      // Build rows
+      const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const headerMap = new Map<number, string>();
+      headerRow.eachCell((cell, colNumber) => headerMap.set(colNumber, String(cell.value || '').trim()))
+
+      const rowsToInsert: any[] = [];
+      for (let r = 2; r <= sheet.rowCount; r++) {
+        const row = sheet.getRow(r);
+        if (!row || row.actualCellCount === 0) continue;
+        const rowObj: Record<string, any> = {};
+        row.eachCell((cell, c) => {
+          const key = headerMap.get(c) || `col_${c}`;
+          // Normalize keys for 'keyword' and 'keywords' to 'keyword'
+          if (requiredKeywordHeaders.includes(key.toLowerCase())) {
+            rowObj['keyword'] = cell.value;
+          } else {
+            rowObj[key] = cell.value;
+          }
+        });
+        // Add Automation status column to each row
+        if (typeof rowObj['Automation'] === 'undefined') {
+          rowObj['Automation'] = 'pending';
+        }
+        // Skip completely empty rows
+        if (Object.values(rowObj).every(v => v === null || v === undefined || String(v).trim() === '')) continue;
+        rowsToInsert.push({ clientId, batchId, originalFileName: fileName || 'upload.xlsx', rowIndex: r - 1, data: rowObj, automation: 'pending' });
+      }
+
+      if (rowsToInsert.length === 0) return res.status(400).json({ error: "No data rows found in Excel" });
+
+      // Replace previous rows for this client atomically (delete old, insert new)
+      try {
+        await db.transaction(async (tx) => {
+          await tx.delete(clientExcels).where(eq(clientExcels.clientId, clientId));
+          await tx.insert(clientExcels).values(rowsToInsert as any);
+        });
+      } catch (e) {
+        console.error('Failed to replace client_excel rows:', e);
+        return res.status(500).json({ error: 'Failed to replace Excel rows' });
+      }
+
+      return res.json({ success: true, batchId, rows: rowsToInsert.length, replacedPrevious: true });
+    } catch (error) {
+      console.error('Upload Excel error:', error);
+      res.status(500).json({ error: 'Failed to process Excel upload' });
+    }
+  });
+
+  // Automation endpoints
+  app.post("/api/automation/start/:clientId", async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      
+      // Verify client exists
+      const client = await storage.getClient(clientId);
+      if (!client) {
+        return res.status(404).json({ error: "Client not found" });
+      }
+
+      // Check if client has any active automation schedules
+      const schedules = await storage.getAutomationSchedules(clientId);
+      const activeSchedules = schedules.filter((s: any) => s.isActive === 'active');
+      
+      if (activeSchedules.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "NO_SCHEDULE_SET",
+          message: "No automation schedule found. Please set up a schedule first before starting automation.",
+          requiresSchedule: true
+        });
+      }
+
+      // Check if it's time to run according to any schedule
+      const now = new Date();
+      const schedulesReadyToRun = activeSchedules.filter(schedule => {
+        if (!schedule.nextRunAt) return false;
+        const nextRun = new Date(schedule.nextRunAt);
+        return now >= nextRun;
+      });
+
+      if (schedulesReadyToRun.length === 0) {
+        // Find the next run time
+        const nextRuns = activeSchedules
+          .map(s => s.nextRunAt)
+          .filter(Boolean)
+          .map(time => new Date(time))
+          .sort((a, b) => a.getTime() - b.getTime());
+        
+        const nextRunTime = nextRuns[0];
+        const timeUntilNext = nextRunTime ? Math.ceil((nextRunTime.getTime() - now.getTime()) / (1000 * 60)) : 0;
+        
+        return res.status(400).json({
+          success: false,
+          error: "SCHEDULE_NOT_READY",
+          message: `Automation is scheduled but not ready to run yet. Next run in approximately ${timeUntilNext} minutes.`,
+          nextRunAt: nextRunTime?.toISOString(),
+          timeUntilNext,
+          requiresSchedule: false
+        });
+      }
+
+      // Check if there are pending jobs
+      const pendingRows = await storage.getClientExcelRows(clientId, 'pending');
+      if (!pendingRows || pendingRows.length === 0) {
+        return res.json({
+          success: false,
+          message: "No pending jobs to process",
+          jobCount: 0,
+          requiresSchedule: false
+        });
+      }
+
+      console.log(`🚀 Starting automation for client: ${client.brandName || clientId} with ${activeSchedules.length} active schedules`);
+      
+      // Import and use the worker manager
+      const { WorkerManager } = await import('./workers/worker-manager.js');
+      const workerManager = WorkerManager.getInstance();
+      
+      // Start the automation worker if not already running
+      const workerResult = await workerManager.startAutomationWorker();
+      if (!workerResult.success) {
+        console.log(`ℹ️ Worker status: ${workerResult.message}`);
+      }
+      
+      // Start automation using the producer (this will respect schedule limits)
+      const result = await AutomationProducer.startClientAutomation(clientId);
+      
+      if (result.success) {
+        // Record activity
+        try {
+          await storage.createActivity({
+            type: 'automation_started',
+            title: `Automation started for ${client.brandName || 'Client'}`,
+            description: `Enqueued ${result.jobCount} jobs for processing`,
+            clientId,
+            metadata: { 
+              jobCount: result.jobCount, 
+              batchId: result.batchId,
+              startedAt: new Date().toISOString(),
+              scheduleCount: activeSchedules.length
+            }
+          } as any);
+        } catch (activityError) {
+          console.error('Failed to record automation activity:', activityError);
+        }
+
+        res.json({
+          success: true,
+          message: `Automation started successfully according to schedule`,
+          jobCount: result.jobCount,
+          batchId: result.batchId,
+          clientId,
+          workerStatus: workerResult.message,
+          scheduleCount: activeSchedules.length
+        });
+      } else {
+        res.json({
+          success: false,
+          message: "No pending jobs to process",
+          jobCount: 0,
+          requiresSchedule: false
+        });
+      }
+      
+    } catch (error) {
+      console.error('❌ Failed to start automation:', error);
+      res.status(500).json({ 
+        error: "Failed to start automation",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  // New endpoint for multi-client automation
+  app.post("/api/automation/start-multiple", async (req, res) => {
+    try {
+      const { clientIds } = req.body;
+      
+      if (!clientIds || !Array.isArray(clientIds) || clientIds.length === 0) {
+        return res.status(400).json({ 
+          error: "INVALID_REQUEST",
+          message: "Please provide an array of client IDs" 
+        });
+      }
+
+      console.log(`🚀 Starting automation for ${clientIds.length} clients: ${clientIds.join(', ')}`);
+      
+      // Import and use the worker manager
+      const { WorkerManager } = await import('./workers/worker-manager.js');
+      const workerManager = WorkerManager.getInstance();
+      
+      // Start the automation worker if not already running
+      const workerResult = await workerManager.startAutomationWorker();
+      if (!workerResult.success) {
+        console.log(`ℹ️ Worker status: ${workerResult.message}`);
+      }
+
+      // Process each client
+      const results = [];
+      let totalJobsEnqueued = 0;
+      
+      for (const clientId of clientIds) {
+        try {
+          // Verify client exists
+          const client = await storage.getClient(clientId);
+          if (!client) {
+            results.push({
+              clientId,
+              success: false,
+              error: "Client not found"
+            });
+            continue;
+          }
+
+          // Check if client has active schedules
+          const schedules = await storage.getAutomationSchedules(clientId);
+          const activeSchedules = schedules.filter((s: any) => s.isActive === 'active');
+          
+          if (activeSchedules.length === 0) {
+            results.push({
+              clientId,
+              success: false,
+              error: "NO_SCHEDULE_SET",
+              message: "No automation schedule found"
+            });
+            continue;
+          }
+
+          // Check if it's time to run according to any schedule
+          const now = new Date();
+          const schedulesReadyToRun = activeSchedules.filter(schedule => {
+            if (!schedule.nextRunAt) return false;
+            const nextRun = new Date(schedule.nextRunAt);
+            return now >= nextRun;
+          });
+
+          if (schedulesReadyToRun.length === 0) {
+            // Find the next run time
+            const nextRuns = activeSchedules
+              .map(s => s.nextRunAt)
+              .filter(Boolean)
+              .map(time => new Date(time))
+              .sort((a, b) => a.getTime() - b.getTime());
+            
+            const nextRunTime = nextRuns[0];
+            const timeUntilNext = nextRunTime ? Math.ceil((nextRunTime.getTime() - now.getTime()) / (1000 * 60)) : 0;
+            
+            results.push({
+              clientId,
+              success: false,
+              error: "SCHEDULE_NOT_READY",
+              message: `Automation scheduled but not ready. Next run in ~${timeUntilNext} minutes.`,
+              nextRunAt: nextRunTime?.toISOString(),
+              timeUntilNext
+            });
+            continue;
+          }
+
+          // Check if there are pending jobs
+          const pendingRows = await storage.getClientExcelRows(clientId, 'pending');
+          if (!pendingRows || pendingRows.length === 0) {
+            results.push({
+              clientId,
+              success: false,
+              error: "NO_PENDING_JOBS",
+              message: "No pending jobs to process"
+            });
+            continue;
+          }
+
+          // Start automation for this client
+          const result = await AutomationProducer.startClientAutomation(clientId);
+          
+          if (result.success) {
+            totalJobsEnqueued += result.jobCount;
+            
+            // Record activity
+            try {
+              await storage.createActivity({
+                type: 'automation_started',
+                title: `Automation started for ${client.brandName || 'Client'}`,
+                description: `Enqueued ${result.jobCount} jobs for processing`,
+                clientId,
+                metadata: { 
+                  jobCount: result.jobCount, 
+                  batchId: result.batchId,
+                  startedAt: new Date().toISOString(),
+                  scheduleCount: activeSchedules.length,
+                  multiClient: true
+                }
+              } as any);
+            } catch (activityError) {
+              console.error('Failed to record automation activity:', activityError);
+            }
+
+            results.push({
+              clientId,
+              success: true,
+              jobCount: result.jobCount,
+              batchId: result.batchId,
+              clientName: client.brandName
+            });
+          } else {
+            results.push({
+              clientId,
+              success: false,
+              error: result.error || "Unknown error",
+              message: result.message
+            });
+          }
+          
+        } catch (error) {
+          console.error(`❌ Failed to start automation for client ${clientId}:`, error);
+          results.push({
+            clientId,
+            success: false,
+            error: "EXECUTION_ERROR",
+            message: error instanceof Error ? error.message : "Unknown error"
+          });
+        }
+      }
+
+      const successfulResults = results.filter(r => r.success);
+      const failedResults = results.filter(r => !r.success);
+      
+      console.log(`📊 Multi-client automation results: ${successfulResults.length} successful, ${failedResults.length} failed`);
+
+      res.json({
+        success: successfulResults.length > 0,
+        message: `Automation completed for ${clientIds.length} clients`,
+        totalJobsEnqueued,
+        results,
+        summary: {
+          totalClients: clientIds.length,
+          successful: successfulResults.length,
+          failed: failedResults.length
+        },
+        workerStatus: workerResult.message
+      });
+      
+    } catch (error) {
+      console.error('❌ Failed to start multi-client automation:', error);
+      res.status(500).json({ 
+        error: "Failed to start multi-client automation",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.get("/api/automation/status/:clientId", async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      
+      // Verify client exists
+      const client = await storage.getClient(clientId);
+      if (!client) {
+        return res.status(404).json({ error: "Client not found" });
+      }
+
+      // Get Excel rows with their automation status
+      const excelRows = await storage.getClientExcelRows(clientId);
+      
+      // Count by status
+      const statusCounts = excelRows.reduce((acc, row) => {
+        const status = row.automation || 'pending';
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
+      // Get automation schedules for this client
+      const schedules = await storage.getAutomationSchedules(clientId);
+      const activeSchedules = schedules.filter((s: any) => s.isActive === 'active');
+
+      // Check automation readiness
+      const pendingJobs = excelRows.filter(row => (row.automation || 'pending') === 'pending').length;
+      const hasSchedule = activeSchedules.length > 0;
+      const canStartAutomation = hasSchedule && pendingJobs > 0;
+
+      // Get queue statistics
+      const queueStats = await AutomationProducer.getQueueStats();
+
+      // Get worker status
+      const { WorkerManager } = await import('./workers/worker-manager.js');
+      const workerManager = WorkerManager.getInstance();
+      const workerStatus = workerManager.getWorkerStatus();
+
+      res.json({
+        success: true,
+        clientId,
+        clientName: client.brandName,
+        totalRows: excelRows.length,
+        statusCounts,
+        automationReadiness: {
+          hasSchedule,
+          pendingJobs,
+          canStartAutomation,
+          scheduleCount: activeSchedules.length,
+          nextScheduledRun: activeSchedules.length > 0 ? activeSchedules[0].nextRunAt : null
+        },
+        schedules: activeSchedules,
+        queueStats,
+        workerStatus,
+        lastUpdated: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Failed to get automation status:', error);
+      res.status(500).json({ 
+        error: "Failed to get automation status",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  // Reset failed rows to pending status for testing
+  app.post("/api/automation/reset-failed/:clientId", async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      
+      // Get all failed Excel rows for this client
+      const failedRows = await storage.getClientExcelRows(clientId, 'failed');
+      
+      if (!failedRows || failedRows.length === 0) {
+        return res.json({
+          success: false,
+          message: "No failed rows found to reset"
+        });
+      }
+
+      // Reset all failed rows to pending status
+      let resetCount = 0;
+      for (const row of failedRows) {
+        try {
+          await db.update(clientExcels)
+            .set({ automation: 'pending' })
+            .where(eq(clientExcels.id, row.id));
+          resetCount++;
+        } catch (error) {
+          console.error(`Failed to reset row ${row.id}:`, error);
+        }
+      }
+
+      res.json({
+        success: true,
+        message: `Reset ${resetCount} failed rows to pending status`,
+        resetCount
+      });
+      
+    } catch (error) {
+      console.error('❌ Failed to reset failed rows:', error);
+      res.status(500).json({ 
+        error: "Failed to reset failed rows",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.get("/api/automation/queues/status", async (req, res) => {
+    try {
+      const queueStats = await AutomationProducer.getQueueStats();
+      
+      if (queueStats) {
+        res.json({
+          success: true,
+          queueStats,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        res.status(500).json({ 
+          error: "Failed to get queue statistics" 
+        });
+      }
+      
+    } catch (error) {
+      console.error('❌ Failed to get queue status:', error);
+      res.status(500).json({ 
+        error: "Failed to get queue status",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.post("/api/automation/queues/pause", async (req, res) => {
+    try {
+      await AutomationProducer.pauseAllQueues();
+      res.json({ 
+        success: true, 
+        message: "All queues paused successfully" 
+      });
+    } catch (error) {
+      console.error('❌ Failed to pause queues:', error);
+      res.status(500).json({ 
+        error: "Failed to pause queues",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.post("/api/automation/queues/resume", async (req, res) => {
+    try {
+      await AutomationProducer.resumeAllQueues();
+      res.json({ 
+        success: true, 
+        message: "All queues resumed successfully" 
+      });
+    } catch (error) {
+      console.error('❌ Failed to resume queues:', error);
+      res.status(500).json({ 
+        error: "Failed to resume queues",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  // Worker management endpoints
+  app.post("/api/automation/worker/start", async (req, res) => {
+    try {
+      const { WorkerManager } = await import('./workers/worker-manager.js');
+      const workerManager = WorkerManager.getInstance();
+      
+      const result = await workerManager.startAutomationWorker();
+      
+      res.json({
+        success: result.success,
+        message: result.message
+      });
+    } catch (error) {
+      console.error('❌ Failed to start worker:', error);
+      res.status(500).json({ 
+        error: "Failed to start worker",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.post("/api/automation/worker/stop", async (req, res) => {
+    try {
+      const { WorkerManager } = await import('./workers/worker-manager.js');
+      const workerManager = WorkerManager.getInstance();
+      
+      const result = await workerManager.stopAutomationWorker();
+      
+      res.json({
+        success: result.success,
+        message: result.message
+      });
+    } catch (error) {
+      console.error('❌ Failed to stop worker:', error);
+      res.status(500).json({ 
+        error: "Failed to stop worker",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.get("/api/automation/worker/status", async (req, res) => {
+    try {
+      const { WorkerManager } = await import('./workers/worker-manager.js');
+      const workerManager = WorkerManager.getInstance();
+      
+      const status = workerManager.getWorkerStatus();
+      
+      res.json({
+        success: true,
+        status,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('❌ Failed to get worker status:', error);
+      res.status(500).json({ 
+        error: "Failed to get worker status",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  // Automation Schedule endpoints
+  app.get("/api/automation/schedules/:clientId", async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      
+      // Verify client exists
+      const client = await storage.getClient(clientId);
+      if (!client) {
+        return res.status(404).json({ error: "Client not found" });
+      }
+
+      const schedules = await storage.getAutomationSchedules(clientId);
+      
+      res.json({
+        success: true,
+        schedules,
+        clientId,
+        clientName: client.brandName
+      });
+    } catch (error) {
+      console.error('❌ Failed to get automation schedules:', error);
+      res.status(500).json({ 
+        error: "Failed to get automation schedules",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.post("/api/automation/schedules", async (req, res) => {
+    try {
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      const schedule = await scheduler.createSchedule(req.body);
+      
+      res.json({
+        success: true,
+        schedule,
+        message: 'Schedule created successfully'
+      });
+    } catch (error) {
+      console.error('❌ Failed to create automation schedule:', error);
+      res.status(500).json({ 
+        error: "Failed to create automation schedule",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.put("/api/automation/schedules/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      const schedule = await scheduler.updateSchedule(id, req.body);
+      
+      res.json({
+        success: true,
+        schedule,
+        message: 'Schedule updated successfully'
+      });
+    } catch (error) {
+      console.error('❌ Failed to update automation schedule:', error);
+      res.status(500).json({ 
+        error: "Failed to update automation schedule",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.delete("/api/automation/schedules/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      await scheduler.deleteSchedule(id);
+      
+      res.json({
+        success: true,
+        message: 'Schedule deleted successfully'
+      });
+    } catch (error) {
+      console.error('❌ Failed to delete automation schedule:', error);
+      res.status(500).json({ 
+        error: "Failed to delete automation schedule",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.post("/api/automation/schedules/:id/pause", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      const schedule = await scheduler.pauseSchedule(id);
+      
+      res.json({
+        success: true,
+        schedule,
+        message: 'Schedule paused successfully'
+      });
+    } catch (error) {
+      console.error('❌ Failed to pause automation schedule:', error);
+      res.status(500).json({ 
+        error: "Failed to pause automation schedule",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.post("/api/automation/schedules/:id/resume", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      const schedule = await scheduler.resumeSchedule(id);
+      
+      res.json({
+        success: true,
+        schedule,
+        message: 'Schedule resumed successfully'
+      });
+    } catch (error) {
+      console.error('❌ Failed to resume automation schedule:', error);
+      res.status(500).json({ 
+        error: "Failed to resume automation schedule",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.get("/api/automation/scheduler/status", async (req, res) => {
+    try {
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      res.json({
+        success: true,
+        isRunning: scheduler.isSchedulerRunning(),
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('❌ Failed to get scheduler status:', error);
+      res.status(500).json({ 
+        error: "Failed to get scheduler status",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.post("/api/automation/scheduler/start", async (req, res) => {
+    try {
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      scheduler.start();
+      
+      res.json({
+        success: true,
+        message: 'Scheduler started successfully'
+      });
+    } catch (error) {
+      console.error('❌ Failed to start scheduler:', error);
+      res.status(500).json({ 
+        error: "Failed to start scheduler",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.post("/api/automation/scheduler/stop", async (req, res) => {
+    try {
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      scheduler.stop();
+      
+      res.json({
+        success: true,
+        message: 'Scheduler stopped successfully'
+      });
+    } catch (error) {
+      console.error('❌ Failed to stop scheduler:', error);
+      res.status(500).json({ 
+        error: "Failed to stop scheduler",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  // Test endpoint to manually trigger scheduler check
+  app.post("/api/automation/scheduler/test", async (req, res) => {
+    try {
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      // Manually trigger the scheduler check
+      const activeSchedules = await storage.getActiveSchedules();
+      const now = new Date();
+      
+      let executedCount = 0;
+      for (const schedule of activeSchedules) {
+        if (scheduler['shouldRunSchedule'](schedule, now)) {
+          await scheduler['executeSchedule'](schedule);
+          executedCount++;
+        }
+      }
+      
+      res.json({
+        success: true,
+        message: `Scheduler test completed. ${executedCount} schedules executed.`,
+        activeSchedules: activeSchedules.length,
+        executedCount,
+        currentTime: now.toISOString()
+      });
+    } catch (error) {
+      console.error('❌ Failed to test scheduler:', error);
+      res.status(500).json({ 
+        error: "Failed to test scheduler",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  // Debug endpoint to check all schedules status
+  app.get("/api/automation/scheduler/debug", async (req, res) => {
+    try {
+      const { AutomationScheduler } = await import('./services/scheduler.js');
+      const scheduler = AutomationScheduler.getInstance();
+      
+      const activeSchedules = await storage.getActiveSchedules();
+      const now = new Date();
+      
+      const scheduleStatus = activeSchedules.map(schedule => {
+        const nextRun = new Date(schedule.nextRunAt);
+        const shouldRun = scheduler['shouldRunSchedule'](schedule, now);
+        const timeUntilNext = nextRun.getTime() - now.getTime();
+        
+        return {
+          id: schedule.id,
+          name: schedule.name,
+          clientId: schedule.clientId,
+          frequency: schedule.frequency,
+          jobsPerRun: schedule.jobsPerRun,
+          startTime: schedule.startTime,
+          isActive: schedule.isActive,
+          lastRunAt: schedule.lastRunAt,
+          nextRunAt: schedule.nextRunAt,
+          shouldRunNow: shouldRun,
+          timeUntilNextMs: timeUntilNext,
+          timeUntilNextFormatted: timeUntilNext > 0 ? 
+            `${Math.floor(timeUntilNext / (1000 * 60 * 60))}h ${Math.floor((timeUntilNext % (1000 * 60 * 60)) / (1000 * 60))}m` : 
+            'Overdue'
+        };
+      });
+      
+      res.json({
+        success: true,
+        currentTime: now.toISOString(),
+        schedulerRunning: scheduler.isSchedulerRunning(),
+        totalSchedules: activeSchedules.length,
+        schedules: scheduleStatus
+      });
+    } catch (error) {
+      console.error('❌ Failed to get scheduler debug info:', error);
+      res.status(500).json({ 
+        error: "Failed to get scheduler debug info",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  app.post("/api/automation/queues/clear", async (req, res) => {
+    try {
+      await AutomationProducer.clearAllQueues();
+      res.json({ 
+        success: true, 
+        message: "All queues cleared successfully" 
+      });
+    } catch (error) {
+      console.error('❌ Failed to clear queues:', error);
+      res.status(500).json({ 
+        error: "Failed to clear queues",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
     }
   });
 

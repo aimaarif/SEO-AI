@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { CheckCircle, Edit, XCircle } from "lucide-react";
 import { useState, useEffect } from "react";
-import { fetchComments, createComment, type Comment, fetchClients, publishToClientWordpress, startClientWordpressOAuth } from "@/lib/api";
+import { fetchComments, createComment, type Comment, fetchClients, publishToClientWordpress } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface ApprovalPanelProps {
@@ -26,9 +26,15 @@ export function ApprovalPanel({ onClearArticle, onStatusChange, articleId }: App
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentText, setCommentText] = useState("");
   const [isLoadingComments, setIsLoadingComments] = useState(false);
-  const [clients, setClients] = useState<Array<{ id: string; brandName: string; connectionType?: string }>>([]);
+  const [clients, setClients] = useState<Array<{ id: string; brandName: string }>>([]);
   const [selectedClientId, setSelectedClientId] = useState<string | undefined>(() => {
-    try { return sessionStorage.getItem('selected-client-id') || undefined; } catch { return undefined; }
+    try {
+      return (
+        sessionStorage.getItem('selected-client-id') ||
+        localStorage.getItem('selected-client-id') ||
+        undefined
+      );
+    } catch { return undefined; }
   });
 
   // Fetch comments when articleId changes
@@ -50,17 +56,25 @@ export function ApprovalPanel({ onClearArticle, onStatusChange, articleId }: App
 
   useEffect(() => {
     fetchClients().then((list) => {
-      setClients((list || []).map((c: any) => ({ 
-        id: c.id, 
-        brandName: c.brandName,
-        connectionType: c.connectionType 
-      })));
+      setClients((list || []).map((c: any) => ({ id: c.id, brandName: c.brandName })));
+      // If nothing selected yet but only one client exists, auto select
+      try {
+        if (!selectedClientId && Array.isArray(list) && list.length === 1) {
+          const onlyId = list[0]?.id;
+          if (onlyId) {
+            setSelectedClientId(onlyId);
+            sessionStorage.setItem('selected-client-id', onlyId);
+            localStorage.setItem('selected-client-id', onlyId);
+          }
+        }
+      } catch {}
     }).catch(() => setClients([]));
   }, []);
 
   useEffect(() => {
     if (selectedClientId) {
       try { sessionStorage.setItem('selected-client-id', selectedClientId); } catch {}
+      try { localStorage.setItem('selected-client-id', selectedClientId); } catch {}
     }
   }, [selectedClientId]);
 
@@ -77,8 +91,9 @@ export function ApprovalPanel({ onClearArticle, onStatusChange, articleId }: App
         onStatusChange('approved');
       }
     } catch (e) {
-      // If publish fails due to auth, send user to connect
-      startClientWordpressOAuth(selectedClientId, articleId);
+      // If publish fails, show error
+      console.error('Publish failed:', e);
+      alert('Failed to publish article. Please check your WordPress credentials.');
     } finally {
       setIsProcessing(false);
     }
@@ -205,21 +220,8 @@ export function ApprovalPanel({ onClearArticle, onStatusChange, articleId }: App
 
   return (
     <div className="space-y-6">
-      <GlassCard className="p-6">
-        <h3 className="text-lg font-semibold mb-4">Select Client</h3>
-        <Select value={selectedClientId} onValueChange={(v) => setSelectedClientId(v)}>
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="Choose a client" />
-          </SelectTrigger>
-          <SelectContent>
-            {clients.map((c) => (
-              <SelectItem key={c.id} value={c.id}>
-                {c.brandName} {c.connectionType && `(${c.connectionType === 'oauth' ? 'OAuth' : 'App Password'})`}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </GlassCard>
+      
+
       {/* Approval Actions */}
       <GlassCard className="p-6">
         <h3 className="text-lg font-semibold mb-4">Approval Actions</h3>

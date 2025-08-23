@@ -18,6 +18,7 @@ interface Keyword {
   priority?: number;
   status: string;
   createdAt: string;
+  automation?: string; // Add this new field
 }
 
 interface KeywordTableProps {
@@ -91,6 +92,60 @@ export function KeywordTable({ searchKeyword, shouldTriggerResearch = false }: K
   const [projectId, setProjectId] = useState("default-project"); // In a real app, this would come from user context
   const [researchStatus, setResearchStatus] = useState<string>("");
   const [, setLocation] = useLocation();
+  const [savedKeywords, setSavedKeywords] = useState<Set<string>>(new Set());
+  
+  // Update the handleExportToExcel function
+  const handleExportToExcel = async () => {
+    try {
+      // Check if all current keywords are already saved
+      const currentKeywordIds = new Set(processedKeywords.map(kw => kw.id));
+      const hasUnsavedKeywords = Array.from(currentKeywordIds).some(id => !savedKeywords.has(id));
+      
+      if (!hasUnsavedKeywords) {
+        setResearchStatus('These keywords have already been saved!');
+        setTimeout(() => setResearchStatus(''), 3000);
+        return;
+      }
+
+      const dataToExport = processedKeywords.map(keyword => ({
+        ...keyword,
+        automation: 'pending' // Add automation status
+      }));
+      
+      const response = await axios.post('/api/keywords/export', {
+        keywords: dataToExport,
+        projectId
+      }, {
+        responseType: 'blob' // Important for file download
+      });
+      
+      // Create a download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `keyword-research-${new Date().toISOString().split('T')[0]}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      // Mark these keywords as saved
+      setSavedKeywords(prev => new Set([...Array.from(prev), ...Array.from(currentKeywordIds)]));
+    } catch (error) {
+      console.error('Export failed:', error);
+      setResearchStatus('Export to Excel failed. Please try again.');
+      setTimeout(() => setResearchStatus(''), 3000);
+    }
+  };
+
+  // Update the Save to Sheets button in the return statement
+  const handleCreateBrief = (kw: string) => {
+    try {
+      sessionStorage.setItem('preselected-target-keyword', kw);
+    } catch (e) {
+      // non-blocking if storage fails
+    }
+    setLocation('/content-brief');
+  };
 
   // Debounce the search keyword to prevent excessive API calls
   const debouncedSearchKeyword = useDebounce(searchKeyword, 1000);
@@ -106,14 +161,6 @@ export function KeywordTable({ searchKeyword, shouldTriggerResearch = false }: K
   });
 
   const [hasSearched, setHasSearched] = useState(false);
-
-    // Trigger research when shouldTriggerResearch is true and we have a search keyword
-    useEffect(() => {
-      if (shouldTriggerResearch && debouncedSearchKeyword && debouncedSearchKeyword.trim()) {
-        setHasSearched(true); // <-- mark that research was attempted
-        researchMutation.mutate(debouncedSearchKeyword);
-      }
-    }, [shouldTriggerResearch, debouncedSearchKeyword]);
 
 
   // Keyword research mutation
@@ -148,9 +195,17 @@ export function KeywordTable({ searchKeyword, shouldTriggerResearch = false }: K
     }
   });
 
+  // Reset saved keywords when new research is performed
+  useEffect(() => {
+    if (researchMutation.isSuccess) {
+      setSavedKeywords(new Set());
+    }
+  }, [researchMutation.isSuccess]);
+
   // Trigger research when shouldTriggerResearch is true and we have a search keyword
   useEffect(() => {
     if (shouldTriggerResearch && debouncedSearchKeyword && debouncedSearchKeyword.trim()) {
+      setHasSearched(true); // <-- mark that research was attempted
       researchMutation.mutate(debouncedSearchKeyword);
     }
   }, [shouldTriggerResearch, debouncedSearchKeyword]);
@@ -161,15 +216,6 @@ export function KeywordTable({ searchKeyword, shouldTriggerResearch = false }: K
     intent: getIntentLabel(keyword.keyword),
     priority: calculatePriority(keyword.volume || 0, keyword.difficulty || 50)
   }));
-
-  const handleCreateBrief = (kw: string) => {
-    try {
-      sessionStorage.setItem('preselected-target-keyword', kw);
-    } catch (e) {
-      // non-blocking if storage fails
-    }
-    setLocation('/content-brief');
-  };
 
   return (
     <GlassCard className="overflow-hidden">
@@ -268,8 +314,14 @@ export function KeywordTable({ searchKeyword, shouldTriggerResearch = false }: K
       </div>
       
       <div className="p-6 border-t border-border">
-        <Button className="bg-primary text-primary-foreground hover:bg-primary/90 animate-pulse-neon">
-          Save to Google Sheets
+        <Button 
+          className="bg-primary text-primary-foreground hover:bg-primary/90 animate-pulse-neon"
+          onClick={handleExportToExcel}
+          // Change this line
+          disabled={processedKeywords.length === 0 || 
+                   [...processedKeywords].every(kw => savedKeywords.has(kw.id))}
+        >
+          Save to Sheets
         </Button>
       </div>
     </GlassCard>

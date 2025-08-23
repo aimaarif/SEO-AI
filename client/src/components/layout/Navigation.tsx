@@ -20,7 +20,7 @@ import {
 import { useState, useEffect } from "react";
 
 const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/keyword-research", label: "Keywords", icon: Search },
   { href: "/content-brief", label: "Brief", icon: FileText },

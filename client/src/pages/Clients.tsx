@@ -28,11 +28,12 @@ import {
   CreditCard,
   AlertCircle
 } from "lucide-react";
-import { fetchClients as apiFetchClients, createClient as apiCreateClient, updateClient as apiUpdateClient, startClientWordpressOAuth, verifyWordPressConnection } from "@/lib/api";
+import { fetchClients as apiFetchClients, createClient as apiCreateClient, updateClient as apiUpdateClient, verifyWordPressConnection, fetchClientExcel } from "@/lib/api";
 
 interface Client {
   id?: string;
   brandName: string;
+  email: string;
   tagline: string;
   mission: string;
   vision: string;
@@ -73,12 +74,7 @@ interface Client {
   emailTemplates: string[];
   brandGuidelines: string;
   // WordPress connection fields
-  connectionType?: 'oauth' | 'application_password';
   wpSiteUrl?: string;
-  // OAuth fields
-  wpClientId?: string;
-  wpClientSecret?: string;
-  wpRedirectUri?: string;
   // Application Password fields
   wpUsername?: string;
   wpAppPassword?: string;
@@ -93,6 +89,7 @@ interface Client {
 
 const defaultClient: Client = {
   brandName: "",
+  email: "",
   tagline: "",
   mission: "",
   vision: "",
@@ -122,11 +119,7 @@ const defaultClient: Client = {
   socialCalendar: "",
   emailTemplates: [],
   brandGuidelines: "",
-  connectionType: "oauth",
   wpSiteUrl: "",
-  wpClientId: "",
-  wpClientSecret: "",
-  wpRedirectUri: "",
   wpUsername: "",
   wpAppPassword: "",
   subscription: {
@@ -140,16 +133,75 @@ const defaultClient: Client = {
 
 export default function Clients() {
   const [clients, setClients] = useState<Client[]>([]);
+  const [activeClientId, setActiveClientId] = useState<string | null>(() => {
+    try {
+      return (
+        sessionStorage.getItem('selected-client-id') ||
+        localStorage.getItem('selected-client-id') ||
+        null
+      );
+    } catch {
+      return null;
+    }
+  });
+  const [currentClient, setCurrentClient] = useState<Client>(defaultClient);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [openSections, setOpenSections] = useState<string[]>([]);
+  const [clientExcelData, setClientExcelData] = useState<any[]>([]);
+  const [isLoadingExcel, setIsLoadingExcel] = useState(false);
+
   useEffect(() => {
     // Load clients from backend
     apiFetchClients()
       .then((items) => setClients(items as any))
       .catch(() => setClients([]));
   }, []);
-  const [currentClient, setCurrentClient] = useState<Client>(defaultClient);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [openSections, setOpenSections] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (activeClientId) {
+      try { sessionStorage.setItem('selected-client-id', activeClientId); } catch {}
+      try { localStorage.setItem('selected-client-id', activeClientId); } catch {}
+      
+      // Fetch Excel data for the active client
+      const fetchExcelData = async () => {
+        setIsLoadingExcel(true);
+        try {
+          const data = await fetchClientExcel(activeClientId);
+          setClientExcelData(data);
+        } catch (error) {
+          console.error('Error fetching Excel data:', error);
+          setClientExcelData([]);
+        } finally {
+          setIsLoadingExcel(false);
+        }
+      };
+      
+      fetchExcelData();
+    } else {
+      setClientExcelData([]);
+    }
+  }, [activeClientId]);
+
+  // Also fetch Excel data when editing a client
+  useEffect(() => {
+    if (editingId && editingId !== activeClientId) {
+      const fetchExcelData = async () => {
+        setIsLoadingExcel(true);
+        try {
+          const data = await fetchClientExcel(editingId);
+          setClientExcelData(data);
+        } catch (error) {
+          console.error('Error fetching Excel data:', error);
+          setClientExcelData([]);
+        } finally {
+          setIsLoadingExcel(false);
+        }
+      };
+      
+      fetchExcelData();
+    }
+  }, [editingId, activeClientId]);
 
   const toggleSection = (section: string) => {
     setOpenSections(prev => 
@@ -171,10 +223,12 @@ export default function Clients() {
           // Fallback if full client cannot be fetched, use optimistic update with currentClient
           setClients(prev => prev.map(client => client.id === editingId ? { ...currentClient, id: editingId } : client));
         }
+        alert('Client updated successfully.');
       } catch (error) {
         console.error('Error updating client:', error);
         // Fallback: optimistic update
         setClients(prev => prev.map(client => client.id === editingId ? { ...currentClient, id: editingId } : client));
+        alert('Failed to update client.');
       }
     } else {
       try {
@@ -191,28 +245,36 @@ export default function Clients() {
           const newClient = { ...currentClient, id: createdSummary.id || Date.now().toString() };
           setClients(prev => [...prev, newClient]);
         }
+        alert('Client saved successfully.');
       } catch (error) {
         console.error('Error creating client:', error);
         // Fallback: optimistic add
         const newClient = { ...currentClient, id: Date.now().toString() };
         setClients(prev => [...prev, newClient]);
+        alert('Failed to save client.');
       }
     }
     setCurrentClient(defaultClient);
     setIsEditing(false);
     setEditingId(null);
+    // Clear Excel data when saving
+    setClientExcelData([]);
   };
 
   const handleEdit = (client: Client) => {
     setCurrentClient(client);
     setIsEditing(true);
     setEditingId(client.id || null);
+    // Clear Excel data when editing a different client
+    setClientExcelData([]);
   };
 
   const handleCancel = () => {
     setCurrentClient(defaultClient);
     setIsEditing(false);
     setEditingId(null);
+    // Clear Excel data when canceling edit
+    setClientExcelData([]);
   };
 
   const addArrayItem = (field: keyof Client, value: string) => {
@@ -238,6 +300,7 @@ export default function Clients() {
       icon: Building,
       fields: [
         { key: "brandName", label: "Brand Name", type: "text"},
+        { key: "email", label: "Contact Email", type: "text"},
         { key: "tagline", label: "Tagline", type: "textarea", required: false },
         { key: "mission", label: "Mission Statement", type: "textarea", required: false },
         { key: "vision", label: "Vision Statement", type: "textarea", required: false },
@@ -295,18 +358,9 @@ export default function Clients() {
       title: "WordPress Connection",
       icon: Share2,
       fields: [
-        { key: "connectionType", label: "Connection Type", type: "select", options: [
-          { value: "oauth", label: "OAuth (WordPress.com or OAuth-enabled)" },
-          { value: "application_password", label: "Application Password (Self-hosted)" }
-        ]},
         { key: "wpSiteUrl", label: "WordPress Site URL", type: "text"},
-        // OAuth fields (conditional)
-        { key: "wpClientId", label: "Client ID", type: "text", condition: "connectionType === 'oauth'"},
-        { key: "wpClientSecret", label: "Client Secret", type: "text", condition: "connectionType === 'oauth'"},
-        { key: "wpRedirectUri", label: "Redirect URI", type: "text", condition: "connectionType === 'oauth'"},
-        // Application Password fields (conditional)
-        { key: "wpUsername", label: "Username", type: "text", condition: "connectionType === 'application_password'"},
-        { key: "wpAppPassword", label: "Application Password", type: "password", condition: "connectionType === 'application_password'"},
+        { key: "wpUsername", label: "Username", type: "text"},
+        { key: "wpAppPassword", label: "Application Password", type: "password"},
       ]
     },
     {
@@ -364,13 +418,7 @@ export default function Clients() {
   };
 
   const renderField = (field: any, key: string) => {
-    // Check if field should be conditionally rendered
-    if (field.condition) {
-      const condition = field.condition.replace('connectionType === \'', '').replace('\'', '');
-      if (currentClient.connectionType !== condition) {
-        return null;
-      }
-    }
+
 
     // Handle nested subscription fields
     if (key.startsWith('subscription.')) {
@@ -650,7 +698,26 @@ export default function Clients() {
             Manage your clients and their complete brand profiles
           </motion.p>
         </motion.div>
-
+{/* Active Client Selector */}
+<div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-xl font-semibold">Active Client</h2>
+                  <p className="text-sm text-muted-foreground">This client will be used for Approval and Email flows.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={activeClientId || ''}
+                    onChange={(e) => setActiveClientId(e.target.value || null)}
+                    className="w-64 px-3 py-2 border border-input bg-background rounded-md text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                  >
+                    <option value="">Select a client</option>
+                    {clients.map((c) => (
+                      <option key={c.id} value={c.id!}>{c.brandName}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              {/* End Active Client Selector */}
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
           {/* Client List */}
           <motion.div 
@@ -667,6 +734,8 @@ export default function Clients() {
                     setCurrentClient(defaultClient);
                     setIsEditing(false);
                     setEditingId(null);
+                    // Clear Excel data when adding new client
+                    setClientExcelData([]);
                   }}
                   size="sm"
                 >
@@ -834,18 +903,116 @@ export default function Clients() {
                         </Button>
                       </CollapsibleTrigger>
                       <CollapsibleContent className="space-y-4 px-4 pb-4">
-                        {section.fields.map((field) => renderField(field, field.key))}
+                        {section.fields.map((field) => (
+                          <div key={field.key}>
+                            {(() => {
+                              const key = field.key as keyof Client;
+                              const label = field.label as string;
+                              switch (field.type) {
+                                case 'text':
+                                  return (
+                                    <div className="space-y-2">
+                                      <Label htmlFor={String(key)}>{label}</Label>
+                                      <Input
+                                        id={String(key)}
+                                        required
+                                        value={(currentClient as any)[key] || ''}
+                                        onChange={(e) => setCurrentClient(prev => ({ ...prev, [key]: e.target.value }))}
+                                        placeholder={`Enter ${label.toLowerCase()}`}
+                                      />
+                                    </div>
+                                  );
+                                case 'password':
+                                  return (
+                                    <div className="space-y-2">
+                                      <Label htmlFor={String(key)}>{label}</Label>
+                                      <Input
+                                        id={String(key)}
+                                        type="password"
+                                        required
+                                        value={(currentClient as any)[key] || ''}
+                                        onChange={(e) => setCurrentClient(prev => ({ ...prev, [key]: e.target.value }))}
+                                        placeholder={`Enter ${label.toLowerCase()}`}
+                                      />
+                                    </div>
+                                  );
+                                case 'textarea':
+                                  return (
+                                    <div className="space-y-2">
+                                      <Label htmlFor={String(key)}>{label}</Label>
+                                      <Textarea
+                                        id={String(key)}
+                                        required
+                                        value={(currentClient as any)[key] || ''}
+                                        onChange={(e) => setCurrentClient(prev => ({ ...prev, [key]: e.target.value }))}
+                                        placeholder={`Enter ${label.toLowerCase()}`}
+                                        rows={3}
+                                      />
+                                    </div>
+                                  );
+                                case 'array':
+                                  return (
+                                    <div className="space-y-2">
+                                      <Label>{label}</Label>
+                                      <div className="space-y-2">
+                                        {((currentClient as any)[key] as string[] || []).map((item: string, index: number) => (
+                                          <div key={index} className="flex items-center gap-2">
+                                            <Input value={item} readOnly />
+                                            <Button type="button" variant="outline" size="sm" onClick={() => removeArrayItem(key as any, index)}>
+                                              <X className="h-4 w-4" />
+                                            </Button>
+                                          </div>
+                                        ))}
+                                        <div className="flex gap-2">
+                                          <Input
+                                            placeholder={`Add ${label.toLowerCase()}`}
+                                            onKeyPress={(e) => {
+                                              if (e.key === 'Enter') {
+                                                addArrayItem(key as any, (e.currentTarget as HTMLInputElement).value);
+                                                (e.currentTarget as HTMLInputElement).value = '';
+                                              }
+                                            }}
+                                            required={((currentClient as any)[key] as string[] || []).length === 0}
+                                          />
+                                          <Button type="button" variant="outline" size="sm" onClick={(e) => {
+                                            const input = (e.currentTarget.previousElementSibling as HTMLInputElement);
+                                            addArrayItem(key as any, input.value);
+                                            input.value = '';
+                                          }}>
+                                            <Plus className="h-4 w-4" />
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                case 'object':
+                                  // For objects, render their child controls (kept required by usage)
+                                  return renderField(field, field.key);
+                                case 'select':
+                                  return (
+                                    <div className="space-y-2">
+                                      <Label htmlFor={String(key)}>{label}</Label>
+                                      <select
+                                        id={String(key)}
+                                        required
+                                        value={(currentClient as any)[key] || ''}
+                                        onChange={(e) => setCurrentClient(prev => ({ ...prev, [key]: e.target.value }))}
+                                        className="w-full px-3 py-2 border border-input bg-background rounded-md text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                      >
+                                        {(field as any).options?.map((option: any) => (
+                                          <option key={option.value} value={option.value}>{option.label}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  );
+                                default:
+                                  return null;
+                              }
+                            })()}
+                          </div>
+                        ))}
                         {section.id === 'wordpress' && currentClient.id && (
                           <div className="pt-2 space-y-2">
-                            {currentClient.connectionType === 'oauth' && (
-                              <Button
-                                type="button"
-                                onClick={() => startClientWordpressOAuth(currentClient.id!)}
-                                className="w-full"
-                              >
-                                Connect WordPress (OAuth)
-                              </Button>
-                            )}
                             <Button
                               type="button"
                               variant="outline"
@@ -872,8 +1039,64 @@ export default function Clients() {
                   );
                 })}
 
+                {/* Excel Upload */}
+                <div className="space-y-2 px-4">
+                  <Label>Keyword Excel Upload</Label>
+                  <p className="text-xs text-muted-foreground">The Excel file must include columns: keyword, content-type, target-audience.</p>
+                  <Input id="client-excel" type="file" accept=".xlsx,.xls" required onChange={async (e) => {
+                    const file = e.currentTarget.files?.[0];
+                    (e.currentTarget as any)._selectedFile = file || null;
+                  }} />
+                  <Button type="button" variant="outline" size="sm" onClick={async () => {
+                    const input = document.getElementById('client-excel') as HTMLInputElement;
+                    const file = (input as any)._selectedFile as File | null;
+                    if (!file) { alert('Please select an Excel file first.'); return; }
+                    if (!editingId) { alert('Save the client first, then upload the Excel.'); return; }
+                    const reader = new FileReader();
+                    reader.onload = async () => {
+                      try {
+                        const base64 = String(reader.result);
+                        const resp = await fetch(`/api/clients/${editingId}/upload-excel`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ fileName: file.name, base64 })
+                        });
+                        if (!resp.ok) {
+                          const err = await resp.json().catch(() => ({}));
+                          alert(`Upload failed: ${err.error || resp.statusText}`);
+                        } else {
+                          const json = await resp.json();
+                          alert(`Excel uploaded: ${json.rows} rows saved.`);
+                          // Refresh Excel data after successful upload
+                          if (activeClientId) {
+                            try {
+                              const data = await fetchClientExcel(activeClientId);
+                              setClientExcelData(data);
+                            } catch (error) {
+                              console.error('Error refreshing Excel data:', error);
+                            }
+                          }
+                          // Also refresh if we're editing this client
+                          if (editingId === activeClientId) {
+                            try {
+                              const data = await fetchClientExcel(editingId);
+                              setClientExcelData(data);
+                            } catch (error) {
+                              console.error('Error refreshing Excel data:', error);
+                            }
+                          }
+                        }
+                      } catch (err) {
+                        alert('Upload failed.');
+                      }
+                    };
+                    reader.readAsDataURL(file);
+                  }}>Upload Excel</Button>
+                </div>
+
+                
+
                 <div className="flex gap-3 pt-6 border-t">
-                  <Button type="submit" className="flex-1">
+                  <Button type="submit" className="flex-1" onClick={async () => {}}>
                     <Save className="w-4 h-4 mr-2" />
                     {isEditing ? "Update Client" : "Save Client"}
                   </Button>
@@ -888,6 +1111,112 @@ export default function Clients() {
           </motion.div>
         </div>
       </div>
+      <br /><br />
+      {/* Excel Data Display */}
+      {(activeClientId || editingId) && (
+                  <div className="space-y-4 px-4">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-lg font-semibold">Uploaded Excel Data</Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          const clientId = editingId || activeClientId;
+                          if (clientId) {
+                            setIsLoadingExcel(true);
+                            try {
+                              const data = await fetchClientExcel(clientId);
+                              setClientExcelData(data);
+                            } catch (error) {
+                              console.error('Error refreshing Excel data:', error);
+                            } finally {
+                              setIsLoadingExcel(false);
+                            }
+                          }
+                        }}
+                        disabled={isLoadingExcel}
+                      >
+                        {isLoadingExcel ? 'Refreshing...' : 'Refresh'}
+                      </Button>
+                    </div>
+                    
+                    {isLoadingExcel ? (
+                      <div className="text-center py-8 text-muted-foreground">
+                        <p>Loading Excel data...</p>
+                      </div>
+                    ) : clientExcelData.length > 0 ? (
+                      <div className="space-y-4">
+                        {/* Group by batch */}
+                        {Array.from(new Set(clientExcelData.map(item => item.batchId))).map(batchId => {
+                          const batchData = clientExcelData.filter(item => item.batchId === batchId);
+                          const fileName = batchData[0]?.originalFileName || 'Unknown file';
+                          const uploadDate = new Date(batchData[0]?.createdAt).toLocaleDateString();
+                          
+                          return (
+                            <div key={batchId} className="space-y-3">
+                              <div className="flex items-center justify-between text-sm text-muted-foreground">
+                                <span><strong>File:</strong> {fileName}</span>
+                                <span><strong>Uploaded:</strong> {uploadDate}</span>
+                                <span><strong>Rows:</strong> {batchData.length}</span>
+                              </div>
+                              
+                              <div className="overflow-x-auto">
+                                <table className="w-full border-collapse border border-border">
+                                  <thead>
+                                    <tr className="bg-muted/50">
+                                      {(() => {
+                                        const headerSet = new Set<string>();
+                                        batchData.forEach((row: any) => {
+                                          Object.keys(row?.data || {}).forEach((h) => headerSet.add(h));
+                                        });
+                                        headerSet.add('Automation');
+                                        const headers = Array.from(headerSet);
+                                        return headers.map((header) => (
+                                          <th key={header} className="border border-border px-3 py-2 text-left text-sm font-medium">
+                                            {header}
+                                          </th>
+                                        ));
+                                      })()}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {(() => {
+                                      const headerSet = new Set<string>();
+                                      batchData.forEach((row: any) => {
+                                        Object.keys(row?.data || {}).forEach((h) => headerSet.add(h));
+                                      });
+                                      headerSet.add('Automation');
+                                      const headers = Array.from(headerSet);
+                                      return batchData.map((row: any) => (
+                                        <tr key={row.id} className="border-b border-border hover:bg-muted/30">
+                                          {headers.map((h) => (
+                                            <td key={h} className="border border-border px-3 py-2 text-sm">
+                                              {h === 'Automation' 
+                                                ? (row?.automation ?? row?.data?.[h] ?? 'pending') 
+                                                : (row?.data?.[h]?.toString() || '')}
+                                            </td>
+                                          ))}
+                                        </tr>
+                                        
+                                      ));
+                                    })()}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-muted-foreground">
+                        <FileText className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                        <p>No Excel data uploaded yet</p>
+                        <p className="text-sm">Upload an Excel file to see the data here</p>
+                      </div>
+                    )}
+                  </div>
+                )}
     </motion.div>
   );
 }

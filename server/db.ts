@@ -1,6 +1,6 @@
 import 'dotenv/config';
 
-import * as schema from "@shared/schema";
+import * as schema from "../shared/schema.js";
 
 // Support both Neon serverless (websocket) and local Postgres (tcp)
 import { neonConfig, Pool as NeonPool } from '@neondatabase/serverless';

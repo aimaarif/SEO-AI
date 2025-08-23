@@ -15,6 +15,9 @@ interface BriefData {
   keyPoints: string[];
   wordCount: string;
   targetAudience?: string;
+  id?: string;
+  keywordId?: string;
+  clientId?: string;
 }
 
 interface ContentPreviewProps {
