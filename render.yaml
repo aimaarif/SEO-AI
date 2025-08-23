@@ -3,7 +3,7 @@ services:
   - type: web
     name: fullstack-app
     env: node
-    buildCommand: npm install && npm run build && npx drizzle-kit push
+    buildCommand: npm install && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
@@ -14,8 +14,124 @@ services:
         fromDatabase:
           name: app-db
           property: connectionString
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: app-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: app-redis
+          property: port
+      - key: REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: app-redis
+          property: password
+      - key: REDIS_DB
+        value: "0"
 
-  # PostgreSQL database
+  # Background worker for automation tasks
+  - type: worker
+    name: automation-worker
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run worker:start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: app-db
+          property: connectionString
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: app-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: app-redis
+          property: port
+      - key: REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: app-redis
+          property: password
+      - key: REDIS_DB
+        value: "0"
+
+  # Queue monitor service
+  - type: worker
+    name: queue-monitor
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run queue:monitor
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: app-db
+          property: connectionString
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: app-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: app-redis
+          property: port
+      - key: REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: app-redis
+          property: password
+      - key: REDIS_DB
+        value: "0"
+
+  # Scheduler service
+  - type: worker
+    name: scheduler
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run scheduler:start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: app-db
+          property: connectionString
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: app-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: app-redis
+          property: port
+      - key: REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: app-redis
+          property: password
+      - key: REDIS_DB
+        value: "0"
+
+# Redis instance for queue management
+redis:
+  - name: app-redis
+    plan: free
+    ipAllowList: []
+
+# PostgreSQL database
 databases:
   - name: app-db
     plan: free
