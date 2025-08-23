@@ -125,14 +125,10 @@ services:
       - key: REDIS_DB
         value: "0"
 
-# Redis instance for queue management
-redis:
-  - name: app-redis
+  # Redis instance for queue management
+  - type: redis
+    name: app-redis
     plan: free
     ipAllowList: []
 
-# PostgreSQL database
-databases:
-  - name: app-db
-    plan: free
-    ipAllowList: []
+
