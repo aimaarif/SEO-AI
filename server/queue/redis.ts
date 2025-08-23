@@ -3,6 +3,13 @@ import { config } from 'dotenv';
 
 config();
 
+// Debug logging
+console.log('🔍 Redis Environment Variables:');
+console.log('REDIS_URL:', process.env.REDIS_URL ? 'SET' : 'NOT SET');
+console.log('REDIS_HOST:', process.env.REDIS_HOST || 'NOT SET');
+console.log('REDIS_PORT:', process.env.REDIS_PORT || 'NOT SET');
+console.log('REDIS_PASSWORD:', process.env.REDIS_PASSWORD ? 'SET' : 'NOT SET');
+
 // Use REDIS_URL if available, otherwise fall back to individual config
 const redisConfig = process.env.REDIS_URL ? {
   // Use the full Redis URL
@@ -20,6 +27,8 @@ const redisConfig = process.env.REDIS_URL ? {
   maxRetriesPerRequest: null, // BullMQ requirement
   lazyConnect: true,
 };
+
+console.log('🔧 Redis Config:', JSON.stringify(redisConfig, null, 2));
 
 // Create Redis connection
 export const redis = new Redis(redisConfig);
