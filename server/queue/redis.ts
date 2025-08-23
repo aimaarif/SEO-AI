@@ -1,6 +1,7 @@
 import Redis from 'ioredis';
 import { config } from 'dotenv';
 
+// Load environment variables
 config();
 
 // Debug logging
@@ -9,37 +10,64 @@ console.log('REDIS_URL:', process.env.REDIS_URL ? 'SET' : 'NOT SET');
 console.log('REDIS_HOST:', process.env.REDIS_HOST || 'NOT SET');
 console.log('REDIS_PORT:', process.env.REDIS_PORT || 'NOT SET');
 console.log('REDIS_PASSWORD:', process.env.REDIS_PASSWORD ? 'SET' : 'NOT SET');
+console.log('NODE_ENV:', process.env.NODE_ENV || 'NOT SET');
 
-// Use REDIS_URL if available, otherwise fall back to individual config
-const redisConfig = process.env.REDIS_URL ? {
-  // Use the full Redis URL
-  url: process.env.REDIS_URL,
-  retryDelayOnFailover: 100,
-  maxRetriesPerRequest: null, // BullMQ requirement
-  lazyConnect: true,
-} : {
-  // Fallback to individual config (for local development)
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379'),
-  password: process.env.REDIS_PASSWORD,
-  db: parseInt(process.env.REDIS_DB || '0'),
-  retryDelayOnFailover: 100,
-  maxRetriesPerRequest: null, // BullMQ requirement
-  lazyConnect: true,
-};
+// Determine Redis configuration
+let redis: Redis;
 
-console.log('🔧 Redis Config:', JSON.stringify(redisConfig, null, 2));
+if (process.env.REDIS_URL) {
+  console.log('🚀 Using REDIS_URL configuration');
+  const options = {
+    retryDelayOnFailover: 100,
+    maxRetriesPerRequest: null, // BullMQ requirement
+    lazyConnect: true,
+    retryDelayOnClusterDown: 100,
+    enableReadyCheck: false,
+    maxLoadingTimeout: 10000,
+  };
+  redis = new Redis(process.env.REDIS_URL, options);
+} else if (process.env.REDIS_HOST && process.env.REDIS_PORT) {
+  console.log('🔧 Using individual Redis config');
+  const options = {
+    host: process.env.REDIS_HOST,
+    port: parseInt(process.env.REDIS_PORT),
+    password: process.env.REDIS_PASSWORD,
+    db: parseInt(process.env.REDIS_DB || '0'),
+    retryDelayOnFailover: 100,
+    maxRetriesPerRequest: null,
+    lazyConnect: true,
+    retryDelayOnClusterDown: 100,
+    enableReadyCheck: false,
+    maxLoadingTimeout: 10000,
+  };
+  redis = new Redis(options);
+} else {
+  console.log('⚠️ No Redis config found, using localhost fallback');
+  const options = {
+    host: 'localhost',
+    port: 6379,
+    db: 0,
+    retryDelayOnFailover: 100,
+    maxRetriesPerRequest: null,
+    lazyConnect: true,
+    retryDelayOnClusterDown: 100,
+    enableReadyCheck: false,
+    maxLoadingTimeout: 10000,
+  };
+  redis = new Redis(options);
+}
 
-// Create Redis connection
-export const redis = new Redis(redisConfig);
+console.log('🔧 Redis instance created with options');
 
 // Handle connection events
 redis.on('connect', () => {
   console.log('✅ Redis connected successfully');
   if (process.env.REDIS_URL) {
     console.log('📍 Connected to Redis via REDIS_URL');
-  } else {
+  } else if (process.env.REDIS_HOST) {
     console.log('📍 Connected to Redis via individual config');
+  } else {
+    console.log('📍 Connected to Redis via localhost fallback');
   }
 });
 
@@ -68,4 +96,5 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
+export { redis };
 export default redis;
