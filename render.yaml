@@ -135,4 +135,4 @@ redis:
 databases:
   - name: app-db
     plan: free
-    ipAllowList: [] # Allow all IPs to access the database
+    ipAllowList: []
