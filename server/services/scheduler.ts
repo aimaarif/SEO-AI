@@ -208,51 +208,50 @@ export class AutomationScheduler {
     const [hours, minutes] = schedule.startTime.split(':').map(Number);
     
     let nextRun = new Date(now);
-    // Use UTC methods for consistent UTC storage
-    nextRun.setUTCHours(hours, minutes, 0, 0);
+    nextRun.setHours(hours, minutes, 0, 0);
 
     // If the time has already passed today, move to the next occurrence
     if (nextRun <= now) {
       switch (schedule.frequency) {
         case 'daily':
-          nextRun.setUTCDate(nextRun.getUTCDate() + schedule.interval);
+          nextRun.setDate(nextRun.getDate() + schedule.interval);
           break;
           
         case 'weekly':
           if (schedule.daysOfWeek && Array.isArray(schedule.daysOfWeek)) {
             // Find the next occurrence based on days of week
-            const currentDay = now.getUTCDay(); // 0 = Sunday, 1 = Monday, etc.
+            const currentDay = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
             const sortedDays = [...schedule.daysOfWeek].sort((a, b) => a - b);
             
             let nextDay = sortedDays.find(day => day > currentDay);
             if (!nextDay) {
               // If no day found this week, take the first day of next week
               nextDay = sortedDays[0];
-              nextRun.setUTCDate(nextRun.getUTCDate() + (7 - currentDay + nextDay));
+              nextRun.setDate(nextRun.getDate() + (7 - currentDay + nextDay));
             } else {
-              nextRun.setUTCDate(nextRun.getUTCDate() + (nextDay - currentDay));
+              nextRun.setDate(nextRun.getDate() + (nextDay - currentDay));
             }
           } else {
-            nextRun.setUTCDate(nextRun.getUTCDate() + (7 * schedule.interval));
+            nextRun.setDate(nextRun.getDate() + (7 * schedule.interval));
           }
           break;
           
         case 'monthly':
           if (schedule.dayOfMonth) {
-            nextRun.setUTCDate(schedule.dayOfMonth);
+            nextRun.setDate(schedule.dayOfMonth);
             // If this month's date has passed, move to next month
             if (nextRun <= now) {
-              nextRun.setUTCMonth(nextRun.getUTCMonth() + schedule.interval);
-              nextRun.setUTCDate(schedule.dayOfMonth);
+              nextRun.setMonth(nextRun.getMonth() + schedule.interval);
+              nextRun.setDate(schedule.dayOfMonth);
             }
           } else {
-            nextRun.setUTCMonth(nextRun.getUTCMonth() + schedule.interval);
+            nextRun.setMonth(nextRun.getMonth() + schedule.interval);
           }
           break;
           
         default:
           // Default to daily
-          nextRun.setUTCDate(nextRun.getUTCDate() + schedule.interval);
+          nextRun.setDate(nextRun.getDate() + schedule.interval);
       }
     }
 

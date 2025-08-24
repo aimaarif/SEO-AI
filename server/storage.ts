@@ -370,13 +370,6 @@ export class DatabaseStorage implements IStorage {
     return await query.orderBy(automationSchedules.createdAt);
   }
 
-  async getActiveSchedules(): Promise<any[]> {
-    return await db.select()
-      .from(automationSchedules)
-      .where(eq(automationSchedules.isActive, 'active'))
-      .orderBy(automationSchedules.nextRunAt);
-  }
-
   async getAutomationSchedule(id: string): Promise<any | undefined> {
     const [schedule] = await db.select().from(automationSchedules).where(eq(automationSchedules.id, id));
     return schedule || undefined;

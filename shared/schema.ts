@@ -299,8 +299,9 @@ export const automationSchedules = pgTable("automation_schedules", {
   daysOfWeek: jsonb("days_of_week"), // [1,2,3,4,5,6,7] for weekly, null for daily/monthly
   dayOfMonth: integer("day_of_month"), // 1-31 for monthly, null for daily/weekly
   isActive: text("is_active").notNull().default("active"), // active, paused, deleted
-  lastRunAt: timestamp("last_run_at"),
-  nextRunAt: timestamp("next_run_at"),
+  timezone: text("timezone").notNull().default("UTC"),
+  lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+  nextRunAt: timestamp("next_run_at", { withTimezone: true }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
