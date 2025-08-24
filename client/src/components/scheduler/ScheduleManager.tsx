@@ -39,6 +39,7 @@ interface Schedule {
   lastRunAt?: string;
   nextRunAt?: string;
   createdAt: string;
+  timezone?: string;
 }
 
 interface ScheduleManagerProps {
@@ -51,17 +52,18 @@ export function ScheduleManager({ clientId, clientName }: ScheduleManagerProps) 
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  // Add timezone to formData
   const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    frequency: 'daily' as const,
-    interval: 1,
-    jobsPerRun: 1,
-    startTime: '09:00',
-    daysOfWeek: [] as number[],
-    dayOfMonth: 1
+      name: '',
+      description: '',
+      frequency: 'daily' as 'daily' | 'weekly' | 'monthly',
+      interval: 1,
+      jobsPerRun: 1,
+      startTime: '09:00',
+      daysOfWeek: [] as number[],
+      dayOfMonth: 1,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone // Get user's timezone
   });
-
   useEffect(() => {
     loadSchedules();
   }, [clientId]);
@@ -78,16 +80,45 @@ export function ScheduleManager({ clientId, clientName }: ScheduleManagerProps) 
     }
   };
 
+  // Utility function to convert local time to UTC for storage
+  const convertLocalTimeToUTC = (localTime: string): string => {
+    const [hours, minutes] = localTime.split(':').map(Number);
+    const now = new Date();
+    const localDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0, 0);
+    
+    // Convert to UTC time string (HH:MM format)
+    const utcHours = localDate.getUTCHours().toString().padStart(2, '0');
+    const utcMinutes = localDate.getUTCMinutes().toString().padStart(2, '0');
+    return `${utcHours}:${utcMinutes}`;
+  };
+
+  // Utility function to convert UTC time back to local time for display
+  const convertUTCToLocalTime = (utcTime: string): string => {
+    const [hours, minutes] = utcTime.split(':').map(Number);
+    const now = new Date();
+    const utcDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes, 0, 0));
+    
+    // Convert UTC to local time string (HH:MM format)
+    const localHours = utcDate.getHours().toString().padStart(2, '0');
+    const localMinutes = utcDate.getMinutes().toString().padStart(2, '0');
+    return `${localHours}:${localMinutes}`;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
 
     try {
+      // Convert local start time to UTC for storage
+      const utcStartTime = convertLocalTimeToUTC(formData.startTime);
+      
       const scheduleData = {
         ...formData,
+        startTime: utcStartTime, // Store UTC time
         clientId,
         daysOfWeek: formData.frequency === 'weekly' ? formData.daysOfWeek : undefined,
-        dayOfMonth: formData.frequency === 'monthly' ? formData.dayOfMonth : undefined
+        dayOfMonth: formData.frequency === 'monthly' ? formData.dayOfMonth : undefined,
+        timezone: formData.timezone
       };
 
       if (editingSchedule) {
@@ -157,9 +188,10 @@ export function ScheduleManager({ clientId, clientName }: ScheduleManagerProps) 
       frequency: schedule.frequency,
       interval: schedule.interval,
       jobsPerRun: schedule.jobsPerRun,
-      startTime: schedule.startTime,
+      startTime: convertUTCToLocalTime(schedule.startTime), // Convert UTC to local time for editing
       daysOfWeek: schedule.daysOfWeek || [],
-      dayOfMonth: schedule.dayOfMonth || 1
+      dayOfMonth: schedule.dayOfMonth || 1,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
     });
     setShowForm(true);
   };
@@ -168,18 +200,28 @@ export function ScheduleManager({ clientId, clientName }: ScheduleManagerProps) 
     setFormData({
       name: '',
       description: '',
-      frequency: 'daily',
+      frequency: 'daily' as 'daily' | 'weekly' | 'monthly',
       interval: 1,
       jobsPerRun: 1,
       startTime: '09:00',
       daysOfWeek: [],
-      dayOfMonth: 1
+      dayOfMonth: 1,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
     });
   };
 
   const formatNextRun = (nextRunAt: string) => {
     const date = new Date(nextRunAt);
-    return date.toLocaleString();
+    // Convert UTC time to local timezone for display
+    return date.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      timeZoneName: 'short'
+    });
   };
 
   const getFrequencyText = (schedule: Schedule) => {
@@ -294,7 +336,7 @@ export function ScheduleManager({ clientId, clientName }: ScheduleManagerProps) 
                 </div>
 
                 <div>
-                  <Label htmlFor="startTime">Start Time</Label>
+                  <Label htmlFor="startTime">Start Time (Local Timezone)</Label>
                   <Input
                     id="startTime"
                     type="time"
@@ -302,6 +344,29 @@ export function ScheduleManager({ clientId, clientName }: ScheduleManagerProps) 
                     onChange={(e) => setFormData({ ...formData, startTime: e.target.value })}
                     required
                   />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    💡 Times are stored in UTC and converted to your local timezone for display
+                  </p>
+                </div>
+
+                <div>
+                  <Label htmlFor="timezone">Timezone</Label>
+                  <Select
+                    value={formData.timezone}
+                    onValueChange={(value) => setFormData({ ...formData, timezone: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Intl.supportedValuesOf('timeZone').map((tz) => (
+                        <SelectItem key={tz} value={tz}>{tz}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    💡 Your local timezone is automatically detected
+                  </p>
                 </div>
 
                 {formData.frequency === 'weekly' && (
@@ -435,7 +500,9 @@ export function ScheduleManager({ clientId, clientName }: ScheduleManagerProps) 
                       </div>
                       <div>
                         <span className="font-medium">Start time:</span>
-                        <p className="text-muted-foreground">{schedule.startTime}</p>
+                        <p className="text-muted-foreground">
+                          {convertUTCToLocalTime(schedule.startTime)} (Local Time)
+                        </p>
                       </div>
                     </div>
 

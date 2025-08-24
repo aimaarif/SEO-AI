@@ -530,7 +530,14 @@ export default function Dashboard() {
                     <div className="flex justify-between">
                       <span>Next Run:</span>
                       <span className="text-blue-600">
-                        {new Date(automationReadiness.nextScheduledRun).toLocaleString()}
+                        {new Date(automationReadiness.nextScheduledRun).toLocaleString(undefined, {
+                          year: 'numeric',
+                          month: 'numeric',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          timeZoneName: 'short'
+                        })}
                       </span>
                     </div>
                   )}

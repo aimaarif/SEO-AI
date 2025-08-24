@@ -202,56 +202,60 @@ export class AutomationScheduler {
 
   /**
    * Calculate the next run time for a schedule
+   * All times are calculated in UTC to avoid timezone issues
    */
   private calculateNextRunTime(schedule: any): Date {
     const now = new Date();
     const [hours, minutes] = schedule.startTime.split(':').map(Number);
     
-    let nextRun = new Date(now);
-    nextRun.setHours(hours, minutes, 0, 0);
+    // Create a UTC date for today at the specified time
+    let nextRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes, 0, 0));
 
     // If the time has already passed today, move to the next occurrence
     if (nextRun <= now) {
       switch (schedule.frequency) {
         case 'daily':
-          nextRun.setDate(nextRun.getDate() + schedule.interval);
+          nextRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + schedule.interval, hours, minutes, 0, 0));
           break;
           
         case 'weekly':
           if (schedule.daysOfWeek && Array.isArray(schedule.daysOfWeek)) {
             // Find the next occurrence based on days of week
-            const currentDay = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+            const currentDay = now.getUTCDay(); // 0 = Sunday, 1 = Monday, etc.
             const sortedDays = [...schedule.daysOfWeek].sort((a, b) => a - b);
             
             let nextDay = sortedDays.find(day => day > currentDay);
             if (!nextDay) {
               // If no day found this week, take the first day of next week
               nextDay = sortedDays[0];
-              nextRun.setDate(nextRun.getDate() + (7 - currentDay + nextDay));
+              const daysToAdd = 7 - currentDay + nextDay;
+              nextRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysToAdd, hours, minutes, 0, 0));
             } else {
-              nextRun.setDate(nextRun.getDate() + (nextDay - currentDay));
+              const daysToAdd = nextDay - currentDay;
+              nextRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysToAdd, hours, minutes, 0, 0));
             }
           } else {
-            nextRun.setDate(nextRun.getDate() + (7 * schedule.interval));
+            const daysToAdd = 7 * schedule.interval;
+            nextRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysToAdd, hours, minutes, 0, 0));
           }
           break;
           
         case 'monthly':
           if (schedule.dayOfMonth) {
-            nextRun.setDate(schedule.dayOfMonth);
+            nextRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), schedule.dayOfMonth, hours, minutes, 0, 0));
             // If this month's date has passed, move to next month
             if (nextRun <= now) {
-              nextRun.setMonth(nextRun.getMonth() + schedule.interval);
-              nextRun.setDate(schedule.dayOfMonth);
+              nextRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + schedule.interval, schedule.dayOfMonth, hours, minutes, 0, 0));
             }
           } else {
-            nextRun.setMonth(nextRun.getMonth() + schedule.interval);
+            nextRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + schedule.interval, now.getUTCDate(), hours, minutes, 0, 0));
           }
           break;
           
         default:
           // Default to daily
-          nextRun.setDate(nextRun.getDate() + schedule.interval);
+          const daysToAdd = schedule.interval;
+          nextRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysToAdd, hours, minutes, 0, 0));
       }
     }
 
